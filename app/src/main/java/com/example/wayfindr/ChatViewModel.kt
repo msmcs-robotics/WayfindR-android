@@ -1,0 +1,74 @@
+package com.example.wayfindr
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class ChatViewModel : ViewModel() {
+    private val _uiState = MutableStateFlow(ChatUiState())
+    val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    private val llmService = LlmService()
+
+    fun updateInput(input: String) {
+        _uiState.value = _uiState.value.copy(currentInput = input)
+    }
+
+    fun sendMessage(message: String) {
+        if (message.isBlank()) return
+
+        val trimmedMessage = message.trim()
+
+        // Add user message
+        val userMessage = ChatMessage(
+            content = trimmedMessage,
+            isUser = true
+        )
+
+        _uiState.value = _uiState.value.copy(
+            messages = _uiState.value.messages + userMessage,
+            currentInput = "",
+            isLoading = true,
+            error = null
+        )
+
+        // Send to LLM
+        viewModelScope.launch {
+            try {
+                val response = llmService.sendMessage(trimmedMessage)
+
+                val assistantMessage = ChatMessage(
+                    content = response,
+                    isUser = false
+                )
+
+                _uiState.value = _uiState.value.copy(
+                    messages = _uiState.value.messages + assistantMessage,
+                    isLoading = false
+                )
+            } catch (e: Exception) {
+                val errorMessage = ChatMessage(
+                    content = "Sorry, I encountered an error: ${e.message ?: "Unknown error"}",
+                    isUser = false
+                )
+
+                _uiState.value = _uiState.value.copy(
+                    messages = _uiState.value.messages + errorMessage,
+                    isLoading = false,
+                    error = e.message
+                )
+            }
+        }
+    }
+
+    fun setListening(listening: Boolean) {
+        _uiState.value = _uiState.value.copy(isListening = listening)
+    }
+
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(error = null)
+    }
+}

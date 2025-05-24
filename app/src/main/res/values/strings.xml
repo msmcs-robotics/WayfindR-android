@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">WayfindR</string>
+    <string name="thinking">Thinking...</string>
+    <string name="chat_title">Chat Title Goes Here</string>
+</resources>
