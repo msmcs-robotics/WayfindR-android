@@ -1,12 +1,6 @@
 package com.example.wayfindr
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Bundle
-import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,7 +20,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.wayfindr.ui.theme.WayfindRTheme
 import kotlinx.coroutines.launch
@@ -34,90 +27,75 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.automirrored.filled.Send
-
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import android.content.Intent
+import android.content.Context
+import androidx.compose.ui.platform.LocalContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var speechManager: SpeechManager
     private lateinit var chatViewModel: ChatViewModel
-    
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (!isGranted) {
-            Toast.makeText(this, "Microphone permission is required", Toast.LENGTH_LONG).show()
+            chatViewModel.setError("Microphone permission is required")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // Check microphone permission
-        checkMicrophonePermission()
-
         setContent {
             WayfindRTheme {
                 chatViewModel = viewModel()
-                
-                // Initialize SpeechManager
-                LaunchedEffect(Unit) {
+                if (!::speechManager.isInitialized) {
                     speechManager = SpeechManager(
                         context = this@MainActivity,
-                        onSpeechResult = { recognizedText ->
-                            chatViewModel.sendMessage(recognizedText)
-                        },
-                        onListeningStateChanged = { isListening ->
-                            chatViewModel.setListening(isListening)
-                        },
-                        onError = { error ->
-                            Toast.makeText(this@MainActivity, error, Toast.LENGTH_SHORT).show()
-                        }
+                        onSpeechResult = { chatViewModel.sendMessage(it) },
+                        onListeningStateChanged = { chatViewModel.setListening(it) },
+                        onError = { chatViewModel.setError(it) }
                     )
                 }
-                
                 ChatScreen(
                     viewModel = chatViewModel,
-                    onSpeechToText = { 
+                    onSpeechToText = {
                         if (hasMicrophonePermission()) {
                             speechManager.startListening()
                         } else {
                             requestMicrophonePermission()
                         }
                     },
-                    onTextToSpeech = { text -> 
-                        speechManager.speakText(text)
-                    },
-                    onStopSpeaking = {
-                        speechManager.stopSpeaking()
-                    }
+                    onTextToSpeech = { speechManager.speakText(it) },
+                    onStopSpeaking = { speechManager.stopSpeaking() }
                 )
             }
         }
+        checkMicrophonePermission()
     }
-    
+
     private fun checkMicrophonePermission() {
-        if (!hasMicrophonePermission()) {
-            requestMicrophonePermission()
-        }
+        if (!hasMicrophonePermission()) requestMicrophonePermission()
     }
-    
-    private fun hasMicrophonePermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-    
+
+    private fun hasMicrophonePermission() = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.RECORD_AUDIO
+    ) == PackageManager.PERMISSION_GRANTED
+
     private fun requestMicrophonePermission() {
         requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::speechManager.isInitialized) {
-            speechManager.cleanup()
-        }
+        if (::speechManager.isInitialized) speechManager.cleanup()
     }
-    
+
     override fun onPause() {
         super.onPause()
         if (::speechManager.isInitialized) {
@@ -125,6 +103,15 @@ class MainActivity : ComponentActivity() {
             speechManager.stopListening()
         }
     }
+}
+
+fun shareMarkdown(context: Context, markdown: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/markdown"
+        putExtra(Intent.EXTRA_SUBJECT, "WayfindR Chat History")
+        putExtra(Intent.EXTRA_TEXT, markdown)
+    }
+    context.startActivity(Intent.createChooser(intent, "Share chat as markdown"))
 }
 
 @Composable
@@ -138,6 +125,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val keyboardController = LocalSoftwareKeyboardController.current
+    val context = LocalContext.current
 
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(uiState.messages.size) {
@@ -153,6 +141,30 @@ fun ChatScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Action buttons row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Button(
+                onClick = { viewModel.clearChatHistory() },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                modifier = Modifier.padding(end = 8.dp)
+            ) {
+                Text("Delete all chat history")
+            }
+            Button(
+                onClick = {
+                    val markdown = viewModel.exportChatHistoryAsMarkdown()
+                    shareMarkdown(context, markdown)
+                }
+            ) {
+                Text("Export chat as Markdown")
+            }
+        }
+
         // Chat header
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -171,8 +183,6 @@ fun ChatScreen(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
-                
-                // Connection status indicator
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -247,15 +257,6 @@ fun ChatScreen(
             isListening = uiState.isListening,
             isLoading = uiState.isLoading
         )
-    }
-}
-
-@Composable
-private fun getString(resId: Int): String {
-    return when (resId) {
-        R.string.chat_title -> "WayfindR Chat"
-        R.string.thinking -> "Thinking..."
-        else -> ""
     }
 }
 

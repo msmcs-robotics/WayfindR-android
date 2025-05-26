@@ -1,5 +1,19 @@
 <resources>
     <string name="app_name">WayfindR</string>
+    <string name="chat_title">WayfindR Chat</string>
+    <string name="type_message_hint">Type your message...</string>
+    <string name="listening_hint">Listening...</string>
+    <string name="send_message">Send message</string>
+    <string name="speech_to_text">Speech to text</string>
+    <string name="speak_message">Speak message</string>
+    <string name="you">You</string>
+    <string name="assistant">Assistant</string>
     <string name="thinking">Thinking...</string>
-    <string name="chat_title">Chat Title Goes Here</string>
+    <string name="error_microphone_permission">Microphone permission required for speech input</string>
+    <string name="error_speech_recognition">Speech recognition error: %1$s</string>
+    <string name="error_network">Network error. Please check your connection.</string>
+    <string name="error_server">Server error. Please try again later.</string>
+    <string name="speak_now">Speak now...</string>
+    <string name="delete_all_chat_history">Delete all chat history</string>
+    <string name="export_chat_as_markdown">Export chat as Markdown</string>
 </resources>

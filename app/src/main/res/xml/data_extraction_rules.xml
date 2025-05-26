@@ -9,11 +9,15 @@
         <include .../>
         <exclude .../>
         -->
+        <include domain="sharedpref" path="."/>
+        <include domain="database" path="."/>
+        <!-- Exclude cache: not needed, cache is not backed up by default -->
+        <!-- <exclude domain="cache" path="."/> -->
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <include domain="sharedpref" path="."/>
+        <include domain="database" path="."/>
+        <!-- Exclude cache: not needed, cache is not backed up by default -->
+        <!-- <exclude domain="cache" path="."/> -->
     </device-transfer>
-    -->
 </data-extraction-rules>

@@ -68,7 +68,25 @@ class ChatViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(isListening = listening)
     }
 
+    fun setError(error: String?) {
+        _uiState.value = _uiState.value.copy(error = error)
+    }
+    
     fun clearError() {
         _uiState.value = _uiState.value.copy(error = null)
+    }
+
+    fun clearChatHistory() {
+        _uiState.value = _uiState.value.copy(messages = emptyList())
+    }
+
+    fun exportChatHistoryAsMarkdown(): String {
+        val builder = StringBuilder()
+        builder.append("# Chat History\n\n")
+        for (msg in _uiState.value.messages) {
+            val sender = if (msg.isUser) "You" else "Assistant"
+            builder.append("**$sender**: ${msg.content.replace("\n", "  \n")}\n\n")
+        }
+        return builder.toString()
     }
 }

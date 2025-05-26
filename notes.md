@@ -31,3 +31,16 @@ Get-ChildItem -Recurse | Where-Object {
 ```
 
 > File → Invalidate Caches / Restart → Invalidate and Restart
+
+
+
+
+I am trying to create an app that provides a fronted for users to chat with a backend LLM server. Basically the user uses the onscreen keyboard or onboard Speech to text and a submit button to send a string of text to a backed server url. From there the LLM should provide a response message and i want that message added to the conversation and then if the user clicks a "speech" button the app will voice that response using onboard text to speech. Please refactor any necessary code to improve it by simplifying it but not diminishing quality. also please let me know a list of files or code pieces that I can remove all together or code pieces that are redundant.
+
+
+given the changes you suggested, apply the same goals i listed earlier about simplification and refactoring to the xml files please. let me know which files i don't need or any other chnages.
+
+
+i want to create a good backup_rules.xml and data_extraction_rules.xml, what exactly can i specify to backup or extract?
+
+I want to backup all chat messages I also want to make sure the user can delete this data if they so choose. please create the backup rules and data extraction ruls xml files. i want to add a "Delete all chat history" button in my app and also a way to share chat history has a markdown file and export all chat messages in markdown format. this way the user can make an offline backup/reference while also clearing out their cloud storage or google drive impact.
