@@ -6,16 +6,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.update
+
+import com.example.wayfindr.UiState
 
 class ChatViewModel(
     private val llmService: LlmService
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(ChatUiState())
-    val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
-
-    fun updateInput(input: String) {
-        _uiState.value = _uiState.value.copy(currentInput = input)
-    }
+    private val _uiState = MutableStateFlow(UiState())
+    val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     fun sendMessage(message: String) {
         if (message.isBlank()) return
@@ -64,12 +63,22 @@ class ChatViewModel(
         }
     }
 
-    fun setListening(listening: Boolean) {
-        _uiState.value = _uiState.value.copy(isListening = listening)
+    fun setListening(isListening: Boolean) {
+        _uiState.update { currentState ->
+            currentState.copy(isListening = isListening)
+        }
     }
 
-    fun setError(error: String?) {
-        _uiState.value = _uiState.value.copy(error = error)
+    fun setError(errorMessage: String?) {
+        _uiState.update { currentState ->
+            currentState.copy(error = errorMessage)
+        }
+    }
+
+    fun updateInput(input: String) {
+        _uiState.update { currentState ->
+            currentState.copy(currentInput = input)
+        }
     }
     
     fun clearError() {

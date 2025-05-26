@@ -1,6 +1,6 @@
 package com.example.wayfindr
 
-data class ChatUiState(
+data class UiState(
     val messages: List<ChatMessage> = emptyList(),
     val currentInput: String = "",
     val isLoading: Boolean = false,

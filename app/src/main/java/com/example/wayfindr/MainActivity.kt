@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsDataStore = SettingsDataStore(applicationContext)
+
         setContent {
             WayfindRTheme {
                 val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -83,6 +84,21 @@ class MainActivity : ComponentActivity() {
                     llmUrl = settingsDataStore.getLlmUrl()
                     llmService = LlmService(llmUrl)
                     chatViewModel = ChatViewModel(llmService!!)
+
+                    // Initialize SpeechManager after chatViewModel is ready
+                    speechManager = SpeechManager(
+                        context = this@MainActivity,
+                        onSpeechResult = { recognizedText ->
+                            chatViewModel.updateInput(recognizedText)
+                        },
+                        onListeningStateChanged = { isListening ->
+                            chatViewModel.setListening(isListening)
+                        },
+                        onError = { errorMessage ->
+                            chatViewModel.setError(errorMessage)
+                        }
+                    )
+
                     viewModelReady = true
                 }
 
@@ -185,9 +201,30 @@ class MainActivity : ComponentActivity() {
                         if (viewModelReady) {
                             ChatScreen(
                                 viewModel = chatViewModel,
-                                onSpeechToText = { /* ... */ },
-                                onTextToSpeech = { /* ... */ },
-                                onStopSpeaking = { /* ... */ },
+                                onSpeechToText = {
+                                    if (hasMicrophonePermission()) {
+                                        if (::speechManager.isInitialized) {
+                                            val uiState = chatViewModel.uiState.value
+                                            if (uiState.isListening) {
+                                                speechManager.stopListening()
+                                            } else {
+                                                speechManager.startListening()
+                                            }
+                                        }
+                                    } else {
+                                        requestMicrophonePermission()
+                                    }
+                                },
+                                onTextToSpeech = { text ->
+                                    if (::speechManager.isInitialized) {
+                                        speechManager.speakText(text)
+                                    }
+                                },
+                                onStopSpeaking = {
+                                    if (::speechManager.isInitialized) {
+                                        speechManager.stopSpeaking()
+                                    }
+                                },
                                 modifier = Modifier.padding(paddingValues)
                             )
                         }
@@ -343,7 +380,7 @@ fun ChatScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Input section (unchanged as requested)
+        // Input section
         ChatInputSection(
             currentInput = uiState.currentInput,
             onInputChange = viewModel::updateInput,
