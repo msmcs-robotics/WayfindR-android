@@ -1,5 +1,10 @@
 ## Software overview
 
+- need to add settings/dropdown menu to select the LLM server URL and port
+- need to add "continous conversation" mode selection in dropdown menu where the app keeps the chat history and sends the last message to the LLM server without user input
+- move delete chat history button to settings menu
+- move "share chat history" button to settings menu
+
 I want to make an app on a galaxy tab a9+ that is a chat interface for a user to the tablet that supports audo STT and TTS using onboard android text to speech and speech to text to send a string of text to an LLM server over the network at url http://192.168.0.100:5000/chat
 
 i want to have the user be able to type in a chat box centerd on the bottom and the rest of the screen be displaying the chat between the user and the LLM. display the llm responses in the chat app. I want the user to be able to click a microphone icon to do speech then the app interprets the text and sends it or the user can select the message icon and use the on screen keyboard to type a message and send to the llm url.
