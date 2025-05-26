@@ -89,7 +89,14 @@ class MainActivity : ComponentActivity() {
                     speechManager = SpeechManager(
                         context = this@MainActivity,
                         onSpeechResult = { recognizedText ->
-                            chatViewModel.updateInput(recognizedText)
+                            // Append recognized text to current input
+                            val currentInput = chatViewModel.uiState.value.currentInput
+                            val newInput = if (currentInput.isBlank()) {
+                                recognizedText
+                            } else {
+                                "$currentInput $recognizedText"
+                            }
+                            chatViewModel.updateInput(newInput)
                         },
                         onListeningStateChanged = { isListening ->
                             chatViewModel.setListening(isListening)
