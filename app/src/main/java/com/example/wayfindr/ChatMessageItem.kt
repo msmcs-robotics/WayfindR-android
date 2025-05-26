@@ -33,8 +33,13 @@ fun ChatMessageItem(
     ) {
         Card(
             modifier = Modifier
-                .widthIn(max = 320.dp)
-                .padding(horizontal = if (isUser) 48.dp else 8.dp),
+                .widthIn(max = 280.dp) // Reduced max width for better balance
+                .padding(
+                    start = if (isUser) 48.dp else 8.dp,
+                    end = if (isUser) 8.dp else 48.dp,
+                    top = 2.dp,
+                    bottom = 2.dp
+                ),
             colors = CardDefaults.cardColors(
                 containerColor = when {
                     isError -> MaterialTheme.colorScheme.errorContainer
