@@ -19,21 +19,27 @@ fun ChatMessageItem(
     onSpeakMessage: (String) -> Unit
 ) {
     val isUser = message.isUser
+    val isError = message.content.startsWith("Sorry, I encountered an error") || message.content.contains("error", ignoreCase = true)
     val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        contentAlignment = when {
+            isUser -> Alignment.CenterEnd
+            else -> Alignment.CenterStart
+        }
     ) {
         Card(
             modifier = Modifier
-                .widthIn(max = 280.dp)
-                .padding(horizontal = if (isUser) 48.dp else 0.dp),
+                .widthIn(max = 320.dp)
+                .padding(horizontal = if (isUser) 48.dp else 8.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isUser) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
+                containerColor = when {
+                    isError -> MaterialTheme.colorScheme.errorContainer
+                    isUser -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.surfaceVariant
                 }
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -48,17 +54,21 @@ fun ChatMessageItem(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (isUser) "You" else "Assistant",
+                        text = when {
+                            isUser -> "You"
+                            isError -> "Error"
+                            else -> "Assistant"
+                        },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (isUser) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                        color = when {
+                            isError -> MaterialTheme.colorScheme.onErrorContainer
+                            isUser -> MaterialTheme.colorScheme.onPrimary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
                         }
                     )
 
-                    if (!isUser) {
+                    if (!isUser && !isError) {
                         IconButton(
                             onClick = { onSpeakMessage(message.content) },
                             modifier = Modifier.size(20.dp)
@@ -79,10 +89,10 @@ fun ChatMessageItem(
                 Text(
                     text = message.content,
                     fontSize = 16.sp,
-                    color = if (isUser) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                    color = when {
+                        isError -> MaterialTheme.colorScheme.onErrorContainer
+                        isUser -> MaterialTheme.colorScheme.onPrimary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     lineHeight = 20.sp
                 )
@@ -93,10 +103,10 @@ fun ChatMessageItem(
                 Text(
                     text = timeFormatter.format(message.timestamp),
                     fontSize = 10.sp,
-                    color = if (isUser) {
-                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    color = when {
+                        isError -> MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                        isUser -> MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     },
                     modifier = Modifier.align(Alignment.End)
                 )

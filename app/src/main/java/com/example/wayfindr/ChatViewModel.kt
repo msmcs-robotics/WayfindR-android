@@ -7,11 +7,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class ChatViewModel : ViewModel() {
+class ChatViewModel(
+    private val llmService: LlmService
+) : ViewModel() {
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
-
-    private val llmService = LlmService()
 
     fun updateInput(input: String) {
         _uiState.value = _uiState.value.copy(currentInput = input)

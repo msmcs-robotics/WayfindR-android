@@ -77,6 +77,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     // ViewModel and LiveData
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")

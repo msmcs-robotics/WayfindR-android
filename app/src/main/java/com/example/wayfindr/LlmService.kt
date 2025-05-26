@@ -9,10 +9,10 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import com.example.wayfindr.dataStore
 
-class LlmService {
-    private val baseUrl = "http://192.168.0.100:5000"
-    private val chatEndpoint = "$baseUrl/chat"
+class LlmService(private val baseUrl: String) { // Accept baseUrl as constructor argument
+    private val chatEndpoint get() = "$baseUrl/chat"
 
     suspend fun sendMessage(message: String): String = withContext(Dispatchers.IO) {
         try {
