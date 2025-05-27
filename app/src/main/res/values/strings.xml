@@ -16,4 +16,6 @@
     <string name="speak_now">Speak now...</string>
     <string name="delete_all_chat_history">Delete all chat history</string>
     <string name="export_chat_as_markdown">Export chat as Markdown</string>
+    <string name="default_kiosk_password">wayfindr</string>
+    <string name="default_llm_url">http://192.168.0.100:5000</string>
 </resources>

@@ -48,6 +48,8 @@ import android.net.NetworkCapabilities
 import java.net.NetworkInterface
 import java.net.Inet4Address
 import androidx.compose.foundation.border
+import android.speech.tts.TextToSpeech
+import java.util.*
 
 import com.example.wayfindr.dataStore
 
@@ -57,6 +59,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var chatViewModel: ChatViewModel
     private lateinit var settingsDataStore: SettingsDataStore
     private var llmService: LlmService? = null
+    private var textToSpeech: TextToSpeech? = null
+    private var isSpeaking by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -70,18 +74,42 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         settingsDataStore = SettingsDataStore(applicationContext)
 
+        // Initialize Text-to-Speech
+        textToSpeech = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                textToSpeech?.language = Locale.getDefault()
+                textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        isSpeaking = true
+                    }
+                    
+                    override fun onDone(utteranceId: String?) {
+                        isSpeaking = false
+                    }
+                    
+                    override fun onError(utteranceId: String?) {
+                        isSpeaking = false
+                    }
+                })
+            }
+        }
+
         setContent {
             WayfindRTheme {
                 val drawerState = rememberDrawerState(DrawerValue.Closed)
                 val scope = rememberCoroutineScope()
                 var showUrlDialog by remember { mutableStateOf(false) }
                 var showWifiDialog by remember { mutableStateOf(false) }
+                var showPasswordDialog by remember { mutableStateOf(false) }
+                var isKioskMode by remember { mutableStateOf(false) }
                 var llmUrl by remember { mutableStateOf("") }
                 var viewModelReady by remember { mutableStateOf(false) }
+                var kioskPasswordHash by remember { mutableStateOf("") }
 
-                // Load persisted URL and initialize services on launch
+                // Load persisted settings and initialize services on launch
                 LaunchedEffect(Unit) {
                     llmUrl = settingsDataStore.getLlmUrl()
+                    kioskPasswordHash = settingsDataStore.getKioskPasswordHash()
                     llmService = LlmService(llmUrl)
                     chatViewModel = ChatViewModel(llmService!!)
 
@@ -97,6 +125,11 @@ class MainActivity : ComponentActivity() {
                                 "$currentInput $recognizedText"
                             }
                             chatViewModel.updateInput(newInput)
+                            
+                            // In kiosk mode, automatically send the message
+                            if (isKioskMode && recognizedText.isNotBlank()) {
+                                chatViewModel.sendMessage(recognizedText)
+                            }
                         },
                         onListeningStateChanged = { isListening ->
                             chatViewModel.setListening(isListening)
@@ -109,169 +142,252 @@ class MainActivity : ComponentActivity() {
                     viewModelReady = true
                 }
 
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    drawerContent = {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Menu", style = MaterialTheme.typography.titleLarge)
-                            Spacer(Modifier.height(16.dp))
-                            NavigationDrawerItem(
-                                label = { Text("Delete all chat history") },
-                                selected = false,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    if (viewModelReady) chatViewModel.clearChatHistory()
-                                }
-                            )
-                            NavigationDrawerItem(
-                                label = { Text("Export chat as Markdown") },
-                                selected = false,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    if (viewModelReady) {
-                                        val markdown = chatViewModel.exportChatHistoryAsMarkdown()
-                                        shareMarkdown(this@MainActivity, markdown)
+                if (isKioskMode && viewModelReady) {
+                    // Kiosk Mode Overlay
+                    KioskMode(
+                        isActive = isKioskMode,
+                        uiState = chatViewModel.uiState.collectAsState().value,
+                        passwordHash = kioskPasswordHash,
+                        onStartListening = {
+                            if (hasMicrophonePermission()) {
+                                speechManager.startListening()
+                            } else {
+                                requestMicrophonePermission()
+                            }
+                        },
+                        onStopListening = {
+                            speechManager.stopListening()
+                        },
+                        onExitKiosk = {
+                            isKioskMode = false
+                            speechManager.stopListening()
+                            speechManager.stopSpeaking()
+                            stopTextToSpeech()
+                        },
+                        onSpeakResponse = { text ->
+                            speakText(text)
+                        },
+                        onStopSpeaking = {
+                            stopTextToSpeech()
+                        },
+                        isSpeaking = isSpeaking
+                    )
+                } else {
+                    // Normal App UI
+                    ModalNavigationDrawer(
+                        drawerState = drawerState,
+                        drawerContent = {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Menu", style = MaterialTheme.typography.titleLarge)
+                                Spacer(Modifier.height(16.dp))
+                                NavigationDrawerItem(
+                                    label = { Text("Delete all chat history") },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        if (viewModelReady) chatViewModel.clearChatHistory()
                                     }
-                                }
-                            )
-                            NavigationDrawerItem(
-                                label = { Text("Set LLM Server URL") },
-                                selected = false,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    showUrlDialog = true
-                                }
-                            )
-                            NavigationDrawerItem(
-                                label = { Text("Show WiFi Info") },
-                                selected = false,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    showWifiDialog = true
-                                }
-                            )
-                        }
-                    }
-                ) {
-                    Scaffold(
-                        topBar = {
-                            if (viewModelReady) {
-                                val uiState by chatViewModel.uiState.collectAsState()
-                                TopAppBar(
-                                    title = {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            Text(stringResource(R.string.chat_title))
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(8.dp)
-                                                        .background(
-                                                            color = if (uiState.error == null)
-                                                                MaterialTheme.colorScheme.primary
-                                                            else
-                                                                MaterialTheme.colorScheme.error,
-                                                            shape = CircleShape
-                                                        )
-                                                )
-                                                Text(
-                                                    text = if (uiState.error == null) "Connected" else "Error",
-                                                    fontSize = 12.sp,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                )
-                                            }
-                                        }
-                                    },
-                                    navigationIcon = {
-                                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                                )
+                                NavigationDrawerItem(
+                                    label = { Text("Export chat as Markdown") },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        if (viewModelReady) {
+                                            val markdown = chatViewModel.exportChatHistoryAsMarkdown()
+                                            shareMarkdown(this@MainActivity, markdown)
                                         }
                                     }
                                 )
-                            } else {
-                                TopAppBar(
-                                    title = { Text(stringResource(R.string.chat_title)) },
-                                    navigationIcon = {
-                                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                                NavigationDrawerItem(
+                                    label = { Text("Set LLM Server URL") },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        showUrlDialog = true
+                                    }
+                                )
+                                NavigationDrawerItem(
+                                    label = { Text("Change Kiosk Password") },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        showPasswordDialog = true
+                                    }
+                                )
+                                NavigationDrawerItem(
+                                    label = { Text("Start Kiosk Mode") },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        if (viewModelReady) {
+                                            isKioskMode = true
                                         }
+                                    }
+                                )
+                                NavigationDrawerItem(
+                                    label = { Text("Show WiFi Info") },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        showWifiDialog = true
                                     }
                                 )
                             }
                         }
-                    ) { paddingValues ->
-                        if (viewModelReady) {
-                            ChatScreen(
-                                viewModel = chatViewModel,
-                                onSpeechToText = {
-                                    if (hasMicrophonePermission()) {
-                                        if (::speechManager.isInitialized) {
-                                            val uiState = chatViewModel.uiState.value
-                                            if (uiState.isListening) {
-                                                speechManager.stopListening()
-                                            } else {
-                                                speechManager.startListening()
+                    ) {
+                        Scaffold(
+                            topBar = {
+                                if (viewModelReady) {
+                                    val uiState by chatViewModel.uiState.collectAsState()
+                                    TopAppBar(
+                                        title = {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                Text(stringResource(R.string.chat_title))
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(8.dp)
+                                                            .background(
+                                                                color = if (uiState.error == null)
+                                                                    MaterialTheme.colorScheme.primary
+                                                                else
+                                                                    MaterialTheme.colorScheme.error,
+                                                                shape = CircleShape
+                                                            )
+                                                    )
+                                                    Text(
+                                                        text = if (uiState.error == null) "Connected" else "Error",
+                                                        fontSize = 12.sp,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        navigationIcon = {
+                                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                                Icon(Icons.Default.Menu, contentDescription = "Menu")
                                             }
                                         }
-                                    } else {
-                                        requestMicrophonePermission()
-                                    }
-                                },
-                                onTextToSpeech = { text ->
-                                    if (::speechManager.isInitialized) {
-                                        speechManager.speakText(text)
-                                    }
-                                },
-                                onStopSpeaking = {
-                                    if (::speechManager.isInitialized) {
-                                        speechManager.stopSpeaking()
-                                    }
-                                },
-                                modifier = Modifier.padding(paddingValues)
-                            )
-                        }
-                        // URL dialog
-                        if (showUrlDialog) {
-                            LlmUrlDialog(
-                                currentUrl = llmUrl,
-                                onSave = { url ->
-                                    llmUrl = url
-                                    scope.launch {
-                                        settingsDataStore.setLlmUrl(url)
-                                        llmService = LlmService(url)
-                                        chatViewModel = ChatViewModel(llmService!!)
-                                    }
-                                    showUrlDialog = false
-                                },
-                                onReset = {
-                                    llmUrl = SettingsDataStore.DEFAULT_URL
-                                    scope.launch {
-                                        settingsDataStore.setLlmUrl(SettingsDataStore.DEFAULT_URL)
-                                        llmService = LlmService(SettingsDataStore.DEFAULT_URL)
-                                        chatViewModel = ChatViewModel(llmService!!)
-                                    }
-                                    showUrlDialog = false
-                                },
-                                onDismiss = { showUrlDialog = false }
-                            )
-                        }
-                        // WiFi dialog
-                        if (showWifiDialog) {
-                            WifiInfoDialog(
-                                context = this@MainActivity,
-                                onDismiss = { showWifiDialog = false }
-                            )
+                                    )
+                                } else {
+                                    TopAppBar(
+                                        title = { Text(stringResource(R.string.chat_title)) },
+                                        navigationIcon = {
+                                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                                Icon(Icons.Default.Menu, contentDescription = "Menu")
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        ) { paddingValues ->
+                            if (viewModelReady) {
+                                ChatScreen(
+                                    viewModel = chatViewModel,
+                                    onSpeechToText = {
+                                        if (hasMicrophonePermission()) {
+                                            if (::speechManager.isInitialized) {
+                                                val uiState = chatViewModel.uiState.value
+                                                if (uiState.isListening) {
+                                                    speechManager.stopListening()
+                                                } else {
+                                                    speechManager.startListening()
+                                                }
+                                            }
+                                        } else {
+                                            requestMicrophonePermission()
+                                        }
+                                    },
+                                    onTextToSpeech = { text ->
+                                        speakText(text)
+                                    },
+                                    onStopSpeaking = {
+                                        stopTextToSpeech()
+                                    },
+                                    modifier = Modifier.padding(paddingValues)
+                                )
+                            }
+                            
+                            // URL dialog
+                            if (showUrlDialog) {
+                                LlmUrlDialog(
+                                    currentUrl = llmUrl,
+                                    onSave = { url ->
+                                        llmUrl = url
+                                        scope.launch {
+                                            settingsDataStore.setLlmUrl(url)
+                                            llmService = LlmService(url)
+                                            chatViewModel = ChatViewModel(llmService!!)
+                                        }
+                                        showUrlDialog = false
+                                    },
+                                    onReset = { defaultUrl ->
+                                        scope.launch {
+                                            settingsDataStore.clearLlmUrl()
+                                            llmUrl = defaultUrl // update state
+                                            llmService = LlmService(defaultUrl)
+                                            chatViewModel = ChatViewModel(llmService!!)
+                                        }
+                                        showUrlDialog = false
+                                    },
+                                    onDismiss = { showUrlDialog = false }
+                                )
+                            }
+                            
+                            // Password change dialog
+                            if (showPasswordDialog) {
+                                PasswordChangeDialog(
+                                    onSave = { newPassword ->
+                                        scope.launch {
+                                            val hashedPassword = SettingsDataStore.hashPassword(newPassword)
+                                            settingsDataStore.setKioskPasswordHash(hashedPassword)
+                                            kioskPasswordHash = hashedPassword
+                                        }
+                                        showPasswordDialog = false
+                                    },
+                                    onReset = {
+                                        scope.launch {
+                                            settingsDataStore.clearKioskPassword()
+                                            val defaultPassword = settingsDataStore.getKioskPasswordHash()
+                                            kioskPasswordHash = defaultPassword
+                                        }
+                                        showPasswordDialog = false
+                                    },
+                                    onDismiss = { showPasswordDialog = false }
+                                )
+                            }
+                            
+                            // WiFi dialog
+                            if (showWifiDialog) {
+                                WifiInfoDialog(
+                                    context = this@MainActivity,
+                                    onDismiss = { showWifiDialog = false }
+                                )
+                            }
                         }
                     }
                 }
             }
         }
         checkMicrophonePermission()
+    }
+
+    private fun speakText(text: String) {
+        textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "TTS_ID")
+    }
+
+    private fun stopTextToSpeech() {
+        if (textToSpeech?.isSpeaking == true) {
+            textToSpeech?.stop()
+        }
+        isSpeaking = false
     }
 
     private fun checkMicrophonePermission() {
@@ -289,6 +405,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (::speechManager.isInitialized) speechManager.cleanup()
+        textToSpeech?.shutdown()
     }
 
     override fun onPause() {
@@ -297,6 +414,7 @@ class MainActivity : ComponentActivity() {
             speechManager.stopSpeaking()
             speechManager.stopListening()
         }
+        stopTextToSpeech()
     }
 }
 
@@ -490,11 +608,14 @@ fun ChatInputSection(
 fun LlmUrlDialog(
     currentUrl: String,
     onSave: (String) -> Unit,
-    onReset: () -> Unit,
+    onReset: suspend (String) -> Unit, // Pass the new url to parent
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var url by remember { mutableStateOf(currentUrl) }
+    val defaultUrl = stringResource(R.string.default_llm_url)
+    val scope = rememberCoroutineScope()
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Set LLM Server URL") },
@@ -505,8 +626,8 @@ fun LlmUrlDialog(
                     onValueChange = { url = it },
                     label = { Text("LLM Server URL") }
                 )
-                Spacer(modifier.height(8.dp))
-                Text("Example: http://192.168.0.100:5000")
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Example: $defaultUrl")
             }
         },
         confirmButton = {
@@ -514,7 +635,14 @@ fun LlmUrlDialog(
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onReset) { Text("Reset to Default") }
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            url = defaultUrl // Update the dialog's text field immediately
+                            onReset(defaultUrl) // Clear storage and update app state
+                        }
+                    }
+                ) { Text("Reset to Default") }
                 TextButton(onClick = onDismiss) { Text("Cancel") }
             }
         }
