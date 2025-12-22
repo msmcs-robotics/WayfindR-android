@@ -65,7 +65,24 @@ class ChatViewModel(
 
     fun setListening(isListening: Boolean) {
         _uiState.update { currentState ->
-            currentState.copy(isListening = isListening)
+            currentState.copy(
+                isListening = isListening,
+                // Clear partial speech when we stop listening
+                partialSpeechText = if (!isListening) "" else currentState.partialSpeechText,
+                isUserSpeaking = if (!isListening) false else currentState.isUserSpeaking
+            )
+        }
+    }
+
+    fun setUserSpeaking(isSpeaking: Boolean) {
+        _uiState.update { currentState ->
+            currentState.copy(isUserSpeaking = isSpeaking)
+        }
+    }
+
+    fun setPartialSpeechText(text: String) {
+        _uiState.update { currentState ->
+            currentState.copy(partialSpeechText = text)
         }
     }
 

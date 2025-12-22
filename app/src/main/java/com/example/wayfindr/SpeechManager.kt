@@ -14,7 +14,9 @@ class SpeechManager(
     private val context: Context,
     private val onSpeechResult: (String) -> Unit,
     private val onListeningStateChanged: (Boolean) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val onPartialResult: ((String) -> Unit)? = null,
+    private val onUserSpeakingChanged: ((Boolean) -> Unit)? = null
 ) : TextToSpeech.OnInitListener {
 
     private var textToSpeech: TextToSpeech? = null
@@ -94,8 +96,10 @@ class SpeechManager(
                 putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak now...")
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+                // Enable partial results for real-time speech display
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             }
-            
+
             recognizer.startListening(intent)
         } ?: run {
             onError("Speech recognizer not available")
@@ -114,31 +118,36 @@ class SpeechManager(
         return object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 onListeningStateChanged(true)
+                onUserSpeakingChanged?.invoke(false)
             }
-            
+
             override fun onBeginningOfSpeech() {
-                // Speech input started
+                // User started speaking
+                onUserSpeakingChanged?.invoke(true)
             }
-            
+
             override fun onRmsChanged(rmsdB: Float) {
                 // Volume level changed - could be used for visual feedback
             }
-            
+
             override fun onBufferReceived(buffer: ByteArray?) {
                 // Partial speech data received
             }
-            
+
             override fun onEndOfSpeech() {
+                onUserSpeakingChanged?.invoke(false)
                 onListeningStateChanged(false)
             }
-            
+
             override fun onError(error: Int) {
+                onUserSpeakingChanged?.invoke(false)
                 onListeningStateChanged(false)
                 val errorMessage = ErrorHandler.handleSpeechError(error)
                 onError(errorMessage)
             }
-            
+
             override fun onResults(results: Bundle?) {
+                onUserSpeakingChanged?.invoke(false)
                 onListeningStateChanged(false)
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
@@ -146,11 +155,15 @@ class SpeechManager(
                     onSpeechResult(recognizedText)
                 }
             }
-            
+
             override fun onPartialResults(partialResults: Bundle?) {
-                // Partial results available - could be used for real-time display
+                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                if (!matches.isNullOrEmpty()) {
+                    val partialText = matches[0]
+                    onPartialResult?.invoke(partialText)
+                }
             }
-            
+
             override fun onEvent(eventType: Int, params: Bundle?) {
                 // Additional events from the recognition service
             }

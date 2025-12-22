@@ -16,6 +16,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.wayfindr.ui.theme.WayfindRTheme
 import kotlinx.coroutines.launch
 import android.Manifest
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -49,6 +51,8 @@ import java.net.NetworkInterface
 import java.net.Inet4Address
 import androidx.compose.foundation.border
 import android.speech.tts.TextToSpeech
+import android.view.View
+import android.view.WindowManager
 import java.util.*
 
 import com.example.wayfindr.dataStore
@@ -61,6 +65,14 @@ class MainActivity : ComponentActivity() {
     private var llmService: LlmService? = null
     private var textToSpeech: TextToSpeech? = null
     private var isSpeaking by mutableStateOf(false)
+    private var isKioskModeActive by mutableStateOf(false)
+
+    // Camera streaming manager
+    private var cameraStreamManager: CameraStreamManager? = null
+
+    // Device Policy Manager for lock task mode
+    private lateinit var devicePolicyManager: DevicePolicyManager
+    private lateinit var adminComponentName: ComponentName
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -70,8 +82,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val requestCameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            initializeCameraStreaming()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize Device Policy Manager for kiosk mode
+        devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        adminComponentName = KioskDeviceAdminReceiver.getComponentName(this)
+
         settingsDataStore = SettingsDataStore(applicationContext)
 
         // Initialize Text-to-Speech
@@ -82,11 +107,11 @@ class MainActivity : ComponentActivity() {
                     override fun onStart(utteranceId: String?) {
                         isSpeaking = true
                     }
-                    
+
                     override fun onDone(utteranceId: String?) {
                         isSpeaking = false
                     }
-                    
+
                     override fun onError(utteranceId: String?) {
                         isSpeaking = false
                     }
@@ -105,6 +130,36 @@ class MainActivity : ComponentActivity() {
                 var llmUrl by remember { mutableStateOf("") }
                 var viewModelReady by remember { mutableStateOf(false) }
                 var kioskPasswordHash by remember { mutableStateOf("") }
+
+                // State for kiosk mode speech confirmation
+                var showSpeechConfirmation by remember { mutableStateOf(false) }
+                var pendingSpeechMessage by remember { mutableStateOf("") }
+
+                // Camera state for kiosk mode
+                val cameraState by remember {
+                    derivedStateOf {
+                        cameraStreamManager?.cameraState?.value ?: CameraState()
+                    }
+                }
+
+                // Sync isKioskMode with activity-level state for lock task handling
+                LaunchedEffect(isKioskMode) {
+                    isKioskModeActive = isKioskMode
+                    if (isKioskMode) {
+                        enableKioskLockTask()
+                        // Start camera streaming when entering kiosk mode
+                        if (hasCameraPermission()) {
+                            initializeCameraStreaming()
+                            cameraStreamManager?.startStreaming(3000L)
+                        } else {
+                            requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    } else {
+                        stopLockTaskIfNeeded()
+                        // Stop camera streaming when exiting kiosk mode
+                        cameraStreamManager?.stopStreaming()
+                    }
+                }
 
                 // Load persisted settings and initialize services on launch
                 LaunchedEffect(Unit) {
@@ -125,10 +180,11 @@ class MainActivity : ComponentActivity() {
                                 "$currentInput $recognizedText"
                             }
                             chatViewModel.updateInput(newInput)
-                            
-                            // In kiosk mode, automatically send the message
+
+                            // In kiosk mode, show confirmation dialog instead of auto-sending
                             if (isKioskMode && recognizedText.isNotBlank()) {
-                                chatViewModel.sendMessage(recognizedText)
+                                pendingSpeechMessage = newInput
+                                showSpeechConfirmation = true
                             }
                         },
                         onListeningStateChanged = { isListening ->
@@ -136,6 +192,12 @@ class MainActivity : ComponentActivity() {
                         },
                         onError = { errorMessage ->
                             chatViewModel.setError(errorMessage)
+                        },
+                        onPartialResult = { partialText ->
+                            chatViewModel.setPartialSpeechText(partialText)
+                        },
+                        onUserSpeakingChanged = { isSpeakingNow ->
+                            chatViewModel.setUserSpeaking(isSpeakingNow)
                         }
                     )
 
@@ -143,7 +205,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (isKioskMode && viewModelReady) {
-                    // Kiosk Mode Overlay
+                    // Kiosk Mode with chat UI
                     KioskMode(
                         isActive = isKioskMode,
                         uiState = chatViewModel.uiState.collectAsState().value,
@@ -170,10 +232,34 @@ class MainActivity : ComponentActivity() {
                         onStopSpeaking = {
                             stopTextToSpeech()
                         },
-                        isSpeaking = isSpeaking
+                        onSendMessage = { message ->
+                            chatViewModel.sendMessage(message)
+                            chatViewModel.updateInput("")
+                        },
+                        showConfirmation = showSpeechConfirmation,
+                        pendingConfirmationMessage = pendingSpeechMessage,
+                        onConfirmSend = {
+                            showSpeechConfirmation = false
+                            chatViewModel.sendMessage(pendingSpeechMessage)
+                            chatViewModel.updateInput("")
+                            pendingSpeechMessage = ""
+                        },
+                        onCancelSend = {
+                            showSpeechConfirmation = false
+                            chatViewModel.updateInput("")
+                            pendingSpeechMessage = ""
+                        },
+                        isSpeaking = isSpeaking,
+                        cameraState = cameraState,
+                        onFrontPreviewCreated = { previewView ->
+                            cameraStreamManager?.bindCameraPreviews(previewView, null)
+                        },
+                        onRearPreviewCreated = { previewView ->
+                            cameraStreamManager?.bindCameraPreviews(null, previewView)
+                        }
                     )
                 } else {
-                    // Normal App UI
+                    // Normal App UI with Navigation Drawer
                     ModalNavigationDrawer(
                         drawerState = drawerState,
                         drawerContent = {
@@ -314,7 +400,7 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.padding(paddingValues)
                                 )
                             }
-                            
+
                             // URL dialog
                             if (showUrlDialog) {
                                 LlmUrlDialog(
@@ -331,7 +417,7 @@ class MainActivity : ComponentActivity() {
                                     onReset = { defaultUrl ->
                                         scope.launch {
                                             settingsDataStore.clearLlmUrl()
-                                            llmUrl = defaultUrl // update state
+                                            llmUrl = defaultUrl
                                             llmService = LlmService(defaultUrl)
                                             chatViewModel = ChatViewModel(llmService!!)
                                         }
@@ -340,7 +426,7 @@ class MainActivity : ComponentActivity() {
                                     onDismiss = { showUrlDialog = false }
                                 )
                             }
-                            
+
                             // Password change dialog
                             if (showPasswordDialog) {
                                 PasswordChangeDialog(
@@ -363,7 +449,7 @@ class MainActivity : ComponentActivity() {
                                     onDismiss = { showPasswordDialog = false }
                                 )
                             }
-                            
+
                             // WiFi dialog
                             if (showWifiDialog) {
                                 WifiInfoDialog(
@@ -377,6 +463,61 @@ class MainActivity : ComponentActivity() {
             }
         }
         checkMicrophonePermission()
+    }
+
+    /**
+     * Enable lock task mode for true kiosk functionality.
+     * Requires the app to be set as device owner via:
+     * adb shell dpm set-device-owner com.example.wayfindr/.KioskDeviceAdminReceiver
+     */
+    private fun enableKioskLockTask() {
+        if (isDeviceOwner()) {
+            // Set this activity as the lock task package
+            devicePolicyManager.setLockTaskPackages(adminComponentName, arrayOf(packageName))
+
+            // Hide status bar and navigation
+            hideSystemUI()
+
+            // Start lock task mode (call Activity's startLockTask)
+            startLockTask()
+        } else {
+            // Fallback: just hide system UI (can still be bypassed with gestures)
+            hideSystemUI()
+        }
+    }
+
+    private fun stopLockTaskIfNeeded() {
+        try {
+            stopLockTask()
+        } catch (e: Exception) {
+            // Not in lock task mode, ignore
+        }
+        showSystemUI()
+    }
+
+    private fun isDeviceOwner(): Boolean {
+        return devicePolicyManager.isDeviceOwnerApp(packageName)
+    }
+
+    private fun hideSystemUI() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            or View.SYSTEM_UI_FLAG_FULLSCREEN
+        )
+    }
+
+    private fun showSystemUI() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
     }
 
     private fun speakText(text: String) {
@@ -402,9 +543,27 @@ class MainActivity : ComponentActivity() {
         requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
+    private fun hasCameraPermission() = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.CAMERA
+    ) == PackageManager.PERMISSION_GRANTED
+
+    private fun initializeCameraStreaming() {
+        if (cameraStreamManager == null) {
+            val llmUrl = settingsDataStore.let {
+                kotlinx.coroutines.runBlocking { it.getLlmUrl() }
+            }
+            cameraStreamManager = CameraStreamManager(
+                context = this,
+                lifecycleOwner = this,
+                baseUrl = llmUrl
+            )
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         if (::speechManager.isInitialized) speechManager.cleanup()
+        cameraStreamManager?.cleanup()
         textToSpeech?.shutdown()
     }
 
@@ -415,6 +574,17 @@ class MainActivity : ComponentActivity() {
             speechManager.stopListening()
         }
         stopTextToSpeech()
+    }
+
+    // Prevent exiting kiosk mode via back button
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (isKioskModeActive) {
+            // Do nothing - prevent back button in kiosk mode
+            return
+        }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 }
 
@@ -471,7 +641,7 @@ fun ChatScreen(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(8.dp), // Padding inside the bordered area
+                    .padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(uiState.messages, key = { it.id }) { message ->
@@ -608,7 +778,7 @@ fun ChatInputSection(
 fun LlmUrlDialog(
     currentUrl: String,
     onSave: (String) -> Unit,
-    onReset: suspend (String) -> Unit, // Pass the new url to parent
+    onReset: suspend (String) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -638,8 +808,8 @@ fun LlmUrlDialog(
                 TextButton(
                     onClick = {
                         scope.launch {
-                            url = defaultUrl // Update the dialog's text field immediately
-                            onReset(defaultUrl) // Clear storage and update app state
+                            url = defaultUrl
+                            onReset(defaultUrl)
                         }
                     }
                 ) { Text("Reset to Default") }
@@ -652,7 +822,6 @@ fun LlmUrlDialog(
 // Dialog for WiFi info
 @Composable
 fun WifiInfoDialog(context: Context, onDismiss: () -> Unit) {
-    // Get IP address using ConnectivityManager and NetworkCapabilities
     val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val network = connectivityManager.activeNetwork
     val networkCapabilities = connectivityManager.getNetworkCapabilities(network)
@@ -669,7 +838,6 @@ fun WifiInfoDialog(context: Context, onDismiss: () -> Unit) {
         }
     }
 
-    // Try to get MAC address (may be unavailable on Android 10+)
     var macAddress = "Unavailable"
     try {
         val interfaces = NetworkInterface.getNetworkInterfaces()

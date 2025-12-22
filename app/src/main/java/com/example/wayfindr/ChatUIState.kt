@@ -5,5 +5,9 @@ data class UiState(
     val currentInput: String = "",
     val isLoading: Boolean = false,
     val isListening: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    // New state for tracking partial speech recognition
+    val partialSpeechText: String = "",
+    // Track if user is actively speaking (voice detected)
+    val isUserSpeaking: Boolean = false
 )

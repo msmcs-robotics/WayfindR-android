@@ -6,9 +6,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -25,10 +26,18 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
-import java.security.MessageDigest
-import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
+import java.security.MessageDigest
+
+/**
+ * Kiosk State represents the 4 distinct visual states
+ */
+enum class KioskState {
+    LISTENING,        // Waiting for user to speak (blue pulsing)
+    USER_SPEAKING,    // User is actively speaking (green animated)
+    WAITING_LLM,      // Waiting for LLM response (orange loading)
+    LLM_RESPONDING    // LLM response being spoken (purple waves)
+}
 
 @Composable
 fun KioskMode(
@@ -40,14 +49,33 @@ fun KioskMode(
     onExitKiosk: () -> Unit,
     onSpeakResponse: (String) -> Unit,
     onStopSpeaking: () -> Unit,
+    onSendMessage: (String) -> Unit,
+    showConfirmation: Boolean = false,
+    pendingConfirmationMessage: String = "",
+    onConfirmSend: () -> Unit = {},
+    onCancelSend: () -> Unit = {},
     isSpeaking: Boolean = false,
+    cameraState: CameraState? = null,
+    onFrontPreviewCreated: ((androidx.camera.view.PreviewView) -> Unit)? = null,
+    onRearPreviewCreated: ((androidx.camera.view.PreviewView) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var showPasswordDialog by remember { mutableStateOf(false) }
     var isListeningContinuously by remember { mutableStateOf(false) }
     var lastResponse by remember { mutableStateOf("") }
     var hasSpokenCurrentResponse by remember { mutableStateOf(false) }
-    
+
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    // Determine current kiosk state
+    val currentKioskState = when {
+        isSpeaking -> KioskState.LLM_RESPONDING
+        uiState.isLoading -> KioskState.WAITING_LLM
+        uiState.isUserSpeaking -> KioskState.USER_SPEAKING
+        else -> KioskState.LISTENING
+    }
+
     // Track the last message to show the latest assistant response
     LaunchedEffect(uiState.messages.size) {
         val lastMessage = uiState.messages.lastOrNull()
@@ -59,12 +87,15 @@ fun KioskMode(
                 onStopListening()
             }
         }
+        // Auto-scroll to bottom when new messages arrive
+        if (uiState.messages.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.messages.size - 1)
+        }
     }
 
     // Handle text-to-speech for new responses
     LaunchedEffect(lastResponse, hasSpokenCurrentResponse) {
         if (isActive && lastResponse.isNotEmpty() && !hasSpokenCurrentResponse && !isSpeaking) {
-            // Small delay to ensure UI updates
             delay(500)
             onSpeakResponse(lastResponse)
             hasSpokenCurrentResponse = true
@@ -75,7 +106,6 @@ fun KioskMode(
     LaunchedEffect(isActive) {
         if (isActive && !isListeningContinuously) {
             isListeningContinuously = true
-            // Wait a moment for UI to settle
             delay(500)
             if (!isSpeaking) {
                 onStartListening()
@@ -88,9 +118,9 @@ fun KioskMode(
     }
 
     // Restart listening when speech finishes and we're not loading
-    LaunchedEffect(isSpeaking, uiState.isLoading, uiState.error, isListeningContinuously) {
-        if (isActive && isListeningContinuously && !isSpeaking && !uiState.isLoading && uiState.error == null && !uiState.isListening) {
-            // Restart listening after speech finishes
+    LaunchedEffect(isSpeaking, uiState.isLoading, uiState.error, isListeningContinuously, showConfirmation) {
+        if (isActive && isListeningContinuously && !isSpeaking && !uiState.isLoading &&
+            uiState.error == null && !uiState.isListening && !showConfirmation) {
             delay(1000)
             onStartListening()
         }
@@ -107,98 +137,124 @@ fun KioskMode(
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.95f))
+                .background(MaterialTheme.colorScheme.background)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
-                ) { showPasswordDialog = true },
-            contentAlignment = Alignment.Center
+                ) { showPasswordDialog = true }
         ) {
             Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
                 modifier = Modifier.fillMaxSize()
             ) {
-                // Circle animation takes up the top portion
+                // Top section: State animation indicator
                 Box(
                     modifier = Modifier
-                        .weight(0.4f)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .height(200.dp)
+                        .background(Color.Black.copy(alpha = 0.9f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    KioskAnimation(
-                        hasError = uiState.error != null,
-                        isListening = uiState.isListening,
-                        isLoading = uiState.isLoading,
-                        isSpeaking = isSpeaking
+                    KioskStateAnimation(
+                        state = currentKioskState,
+                        partialSpeechText = uiState.partialSpeechText,
+                        hasError = uiState.error != null
                     )
                 }
-                
-                // Response text area takes up the bottom portion
-                Box(
+
+                // Chat messages section (like normal chat mode)
+                Card(
                     modifier = Modifier
-                        .weight(0.6f)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 16.dp),
-                    contentAlignment = Alignment.TopCenter
+                        .weight(1f)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
-                    if (lastResponse.isNotEmpty()) {
-                        Card(
-                            modifier = Modifier.fillMaxSize(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color.White.copy(alpha = 0.12f)
-                            ),
-                            shape = RoundedCornerShape(20.dp)
-                        ) {
-                            Text(
-                                text = lastResponse,
-                                color = Color.White,
-                                fontSize = 18.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(20.dp)
-                                    .verticalScroll(rememberScrollState()),
-                                lineHeight = 26.sp,
-                                fontWeight = FontWeight.Normal
-                            )
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(uiState.messages, key = { it.id }) { message ->
+                            KioskChatMessageItem(message = message)
                         }
-                    } else {
-                        // Show welcome message when no response yet
-                        Card(
-                            modifier = Modifier.fillMaxSize(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color.White.copy(alpha = 0.08f)
-                            ),
-                            shape = RoundedCornerShape(20.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(20.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "WayfindR Kiosk Mode",
-                                    color = Color.White,
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = "Speak your question and I'll help you find your way",
-                                    color = Color.White.copy(alpha = 0.8f),
-                                    fontSize = 16.sp,
-                                    textAlign = TextAlign.Center,
-                                    lineHeight = 22.sp
-                                )
+
+                        // Show what user is currently saying (partial speech)
+                        if (uiState.partialSpeechText.isNotEmpty()) {
+                            item {
+                                KioskPartialSpeechItem(text = uiState.partialSpeechText)
+                            }
+                        }
+
+                        // Loading indicator
+                        if (uiState.isLoading) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            "Thinking...",
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
+
+                // Bottom hint
+                Text(
+                    text = "Tap anywhere to exit kiosk mode",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
+                )
             }
+
+            // Camera previews overlay (non-obstructing corners)
+            if (cameraState != null && (cameraState.hasFrontCamera || cameraState.hasRearCamera)) {
+                KioskCameraPreviews(
+                    cameraState = cameraState,
+                    onFrontPreviewCreated = { previewView ->
+                        onFrontPreviewCreated?.invoke(previewView)
+                    },
+                    onRearPreviewCreated = { previewView ->
+                        onRearPreviewCreated?.invoke(previewView)
+                    },
+                    previewSize = 100.dp,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        // Confirmation dialog with countdown
+        if (showConfirmation && pendingConfirmationMessage.isNotEmpty()) {
+            SpeechConfirmationDialog(
+                recognizedText = pendingConfirmationMessage,
+                onConfirm = onConfirmSend,
+                onCancel = onCancelSend,
+                onTimeout = onConfirmSend
+            )
         }
 
         if (showPasswordDialog) {
@@ -214,158 +270,469 @@ fun KioskMode(
     }
 }
 
+/**
+ * Callback interface for handling speech confirmation in kiosk mode
+ */
 @Composable
-fun KioskAnimation(
+fun rememberKioskSpeechHandler(
+    onShowConfirmation: (String) -> Unit
+): (String) -> Unit {
+    return remember { { text -> onShowConfirmation(text) } }
+}
+
+@Composable
+fun KioskStateAnimation(
+    state: KioskState,
+    partialSpeechText: String,
     hasError: Boolean,
-    isListening: Boolean,
-    isLoading: Boolean,
-    isSpeaking: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    // Animation for the pulsing circle
-    val infiniteTransition = rememberInfiniteTransition(label = "kiosk_animation")
-    
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
+    val infiniteTransition = rememberInfiniteTransition(label = "kiosk_state_animation")
+
+    // Base pulse animation
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.9f,
+        targetValue = 1.1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = EaseInOutSine),
+            animation = tween(1500, easing = EaseInOutSine),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "scale_animation"
+        label = "pulse"
     )
-    
-    val rotation by infiniteTransition.animateFloat(
+
+    // Fast pulse for user speaking
+    val fastPulse by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = EaseInOutSine),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "fast_pulse"
+    )
+
+    // Wave animation for LLM responding
+    val wave by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(6000, easing = LinearEasing),
+            animation = tween(2000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "rotation_animation"
+        label = "wave"
     )
 
-    // Faster pulse when speaking
-    val speakingScale by infiniteTransition.animateFloat(
-        initialValue = 0.9f,
-        targetValue = 1.3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(800, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "speaking_scale_animation"
-    )
+    // Determine color based on state
+    val stateColor = when {
+        hasError -> Color(0xFFE53935) // Red for error
+        else -> when (state) {
+            KioskState.LISTENING -> Color(0xFF2196F3)      // Blue
+            KioskState.USER_SPEAKING -> Color(0xFF4CAF50)  // Green
+            KioskState.WAITING_LLM -> Color(0xFFFF9800)    // Orange
+            KioskState.LLM_RESPONDING -> Color(0xFF9C27B0) // Purple
+        }
+    }
+
+    val stateText = when {
+        hasError -> "Connection Error"
+        else -> when (state) {
+            KioskState.LISTENING -> "Listening..."
+            KioskState.USER_SPEAKING -> "You're speaking..."
+            KioskState.WAITING_LLM -> "Processing..."
+            KioskState.LLM_RESPONDING -> "Speaking..."
+        }
+    }
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
-        modifier = modifier.fillMaxSize()
+        modifier = modifier
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.size(240.dp)
+            modifier = Modifier.size(120.dp)
         ) {
+            // Animated circles based on state
             Canvas(
                 modifier = Modifier
-                    .size(240.dp)
-                    .scale(if (isSpeaking) speakingScale else scale)
+                    .size(120.dp)
+                    .scale(
+                        when (state) {
+                            KioskState.USER_SPEAKING -> fastPulse
+                            KioskState.LLM_RESPONDING -> fastPulse
+                            else -> pulse
+                        }
+                    )
             ) {
                 val radius = size.minDimension / 2 * 0.8f
-                val strokeWidth = 6.dp.toPx()
-                
-                val circleColor = when {
-                    hasError -> Color.Red
-                    else -> Color(0xFF2196F3) // Blue color matching UI state indicator
-                }
-                
-                // Outer pulsing circle
+                val strokeWidth = 4.dp.toPx()
+
+                // Outer ring
                 drawCircle(
-                    color = circleColor.copy(alpha = 0.4f),
+                    color = stateColor.copy(alpha = 0.3f),
                     radius = radius,
                     style = Stroke(width = strokeWidth)
                 )
-                
-                // Middle circle
+
+                // Middle ring
                 drawCircle(
-                    color = circleColor.copy(alpha = 0.6f),
-                    radius = radius * 0.75f,
+                    color = stateColor.copy(alpha = 0.5f),
+                    radius = radius * 0.7f,
                     style = Stroke(width = strokeWidth * 0.75f)
                 )
-                
+
                 // Inner solid circle
                 drawCircle(
-                    color = circleColor.copy(alpha = 0.8f),
-                    radius = radius * 0.5f
+                    color = stateColor.copy(alpha = 0.8f),
+                    radius = radius * 0.4f
                 )
             }
-            
-            // Inner animated circle for listening state
-            if (isListening && !isSpeaking) {
-                Canvas(
-                    modifier = Modifier
-                        .size(140.dp)
-                        .scale(1.1f)
-                ) {
-                    val radius = size.minDimension / 2 * 0.7f
-                    val strokeWidth = 3.dp.toPx()
-                    
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.9f),
-                        radius = radius,
-                        style = Stroke(width = strokeWidth)
-                    )
-                }
-            }
-            
-            // Loading indicator
-            if (isLoading) {
+
+            // Loading spinner for WAITING_LLM state
+            if (state == KioskState.WAITING_LLM) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(80.dp),
+                    modifier = Modifier.size(50.dp),
                     color = Color.White,
-                    strokeWidth = 4.dp
+                    strokeWidth = 3.dp
                 )
             }
-            
-            // Speaking indicator
-            if (isSpeaking) {
-                Canvas(
-                    modifier = Modifier
-                        .size(100.dp)
-                ) {
-                    val radius = size.minDimension / 2 * 0.6f
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.9f),
-                        radius = radius
-                    )
+
+            // Sound wave indicator for LLM_RESPONDING
+            if (state == KioskState.LLM_RESPONDING) {
+                Canvas(modifier = Modifier.size(60.dp)) {
+                    val centerY = size.height / 2
+                    val barWidth = 6.dp.toPx()
+                    val spacing = 10.dp.toPx()
+                    val maxHeight = size.height * 0.6f
+
+                    for (i in 0..2) {
+                        val phase = (wave + i * 120) % 360
+                        val heightFactor = kotlin.math.sin(Math.toRadians(phase.toDouble())).toFloat()
+                        val barHeight = maxHeight * (0.3f + 0.7f * kotlin.math.abs(heightFactor))
+
+                        drawRoundRect(
+                            color = Color.White,
+                            topLeft = androidx.compose.ui.geometry.Offset(
+                                x = (size.width / 2) - (spacing + barWidth / 2) + (i - 1) * (barWidth + spacing),
+                                y = centerY - barHeight / 2
+                            ),
+                            size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2)
+                        )
+                    }
                 }
             }
         }
-        
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        // Status text
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         Text(
-            text = when {
-                hasError -> "Connection Error"
-                isSpeaking -> "Speaking..."
-                isLoading -> "Processing..."
-                isListening -> "Listening..."
-                else -> "Ready"
-            },
+            text = stateText,
             color = Color.White,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Medium,
-            textAlign = TextAlign.Center
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium
         )
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        Text(
-            text = "Tap anywhere to exit kiosk mode",
-            color = Color.White.copy(alpha = 0.6f),
-            fontSize = 14.sp,
-            textAlign = TextAlign.Center
+
+        // Show partial speech text if user is speaking
+        if (state == KioskState.USER_SPEAKING && partialSpeechText.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "\"$partialSpeechText\"",
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun KioskChatMessageItem(
+    message: ChatMessage,
+    modifier: Modifier = Modifier
+) {
+    val isUser = message.isUser
+    val backgroundColor = if (isUser) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val textColor = if (isUser) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Card(
+            modifier = Modifier.widthIn(max = 300.dp),
+            colors = CardDefaults.cardColors(containerColor = backgroundColor),
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (isUser) 16.dp else 4.dp,
+                bottomEnd = if (isUser) 4.dp else 16.dp
+            )
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = if (isUser) "You" else "Assistant",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textColor.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = message.content,
+                    fontSize = 15.sp,
+                    color = textColor,
+                    lineHeight = 20.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun KioskPartialSpeechItem(
+    text: String,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End
+    ) {
+        Card(
+            modifier = Modifier.widthIn(max = 300.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+            ),
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = 16.dp,
+                bottomEnd = 4.dp
+            )
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "You",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                    )
+                    // Typing indicator dots
+                    TypingIndicator()
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = text,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    lineHeight = 20.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TypingIndicator() {
+    val infiniteTransition = rememberInfiniteTransition(label = "typing")
+    val alpha1 by infiniteTransition.animateFloat(
+        initialValue = 0.3f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600),
+            repeatMode = RepeatMode.Reverse
+        ), label = "dot1"
+    )
+    val alpha2 by infiniteTransition.animateFloat(
+        initialValue = 0.3f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = 200),
+            repeatMode = RepeatMode.Reverse
+        ), label = "dot2"
+    )
+    val alpha3 by infiniteTransition.animateFloat(
+        initialValue = 0.3f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = 400),
+            repeatMode = RepeatMode.Reverse
+        ), label = "dot3"
+    )
+
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .background(
+                    MaterialTheme.colorScheme.onPrimary.copy(alpha = alpha1),
+                    CircleShape
+                )
         )
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .background(
+                    MaterialTheme.colorScheme.onPrimary.copy(alpha = alpha2),
+                    CircleShape
+                )
+        )
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .background(
+                    MaterialTheme.colorScheme.onPrimary.copy(alpha = alpha3),
+                    CircleShape
+                )
+        )
+    }
+}
+
+@Composable
+fun SpeechConfirmationDialog(
+    recognizedText: String,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+    onTimeout: () -> Unit
+) {
+    var countdown by remember { mutableStateOf(5) }
+    val scope = rememberCoroutineScope()
+
+    // Countdown timer
+    LaunchedEffect(Unit) {
+        while (countdown > 0) {
+            delay(1000)
+            countdown--
+        }
+        onTimeout()
+    }
+
+    // Animated progress
+    val progress = countdown / 5f
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = tween(900, easing = LinearEasing),
+        label = "countdown_progress"
+    )
+
+    Dialog(
+        onDismissRequest = { /* Prevent dismiss by clicking outside */ },
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Done Speaking?",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Show what was recognized
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = "\"$recognizedText\"",
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Countdown circle
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(80.dp)
+                ) {
+                    CircularProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier.fillMaxSize(),
+                        color = when {
+                            countdown <= 2 -> MaterialTheme.colorScheme.error
+                            countdown <= 3 -> Color(0xFFFF9800)
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                        strokeWidth = 6.dp,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    Text(
+                        text = countdown.toString(),
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Sending in $countdown seconds...",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Action buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel", fontSize = 16.sp)
+                    }
+
+                    Button(
+                        onClick = onConfirm,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Text("Send Now", fontSize = 16.sp)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -377,7 +744,7 @@ fun PasswordDialog(
 ) {
     var password by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
-    
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -401,21 +768,21 @@ fun PasswordDialog(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                
+
                 Spacer(modifier = Modifier.height(8.dp))
-                
+
                 Text(
                     text = "Enter password to exit kiosk mode",
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
                 )
-                
+
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 OutlinedTextField(
                     value = password,
-                    onValueChange = { 
+                    onValueChange = {
                         password = it
                         isError = false
                     },
@@ -425,7 +792,7 @@ fun PasswordDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                
+
                 if (isError) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
@@ -435,9 +802,9 @@ fun PasswordDialog(
                         textAlign = TextAlign.Center
                     )
                 }
-                
+
                 Spacer(modifier = Modifier.height(24.dp))
-                
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -448,7 +815,7 @@ fun PasswordDialog(
                     ) {
                         Text("Cancel")
                     }
-                    
+
                     Button(
                         onClick = {
                             val enteredHash = hashPassword(password)
@@ -470,7 +837,6 @@ fun PasswordDialog(
     }
 }
 
-// Password change dialog - Fixed version
 @Composable
 fun PasswordChangeDialog(
     onSave: (String) -> Unit,
@@ -506,21 +872,21 @@ fun PasswordChangeDialog(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                
+
                 Spacer(modifier = Modifier.height(8.dp))
-                
+
                 Text(
                     text = "Enter new password for kiosk mode",
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
                 )
-                
+
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 OutlinedTextField(
                     value = newPassword,
-                    onValueChange = { 
+                    onValueChange = {
                         newPassword = it
                         isError = false
                     },
@@ -530,12 +896,12 @@ fun PasswordChangeDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                
+
                 Spacer(modifier = Modifier.height(12.dp))
-                
+
                 OutlinedTextField(
                     value = confirmPassword,
-                    onValueChange = { 
+                    onValueChange = {
                         confirmPassword = it
                         isError = false
                     },
@@ -545,7 +911,7 @@ fun PasswordChangeDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                
+
                 if (isError) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
@@ -555,15 +921,13 @@ fun PasswordChangeDialog(
                         textAlign = TextAlign.Center
                     )
                 }
-                
+
                 Spacer(modifier = Modifier.height(24.dp))
-                
-                // Fixed: Use proper layout for three buttons
+
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Save button
                     Button(
                         onClick = {
                             when {
@@ -589,8 +953,7 @@ fun PasswordChangeDialog(
                     ) {
                         Text("Save New Password")
                     }
-                    
-                    // Reset to default button
+
                     OutlinedButton(
                         onClick = {
                             scope.launch {
@@ -601,8 +964,7 @@ fun PasswordChangeDialog(
                     ) {
                         Text("Reset to Default")
                     }
-                    
-                    // Cancel button
+
                     TextButton(
                         onClick = onDismiss,
                         modifier = Modifier.fillMaxWidth()
@@ -615,7 +977,6 @@ fun PasswordChangeDialog(
     }
 }
 
-// Utility function to hash passwords
 fun hashPassword(password: String): String {
     val bytes = password.toByteArray()
     val md = MessageDigest.getInstance("SHA-256")
