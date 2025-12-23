@@ -4,6 +4,7 @@ import android.view.ViewGroup
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -74,37 +75,63 @@ fun CameraPreview(
     }
 }
 
+/**
+ * Single camera preview for kiosk mode.
+ * CameraX only supports one camera at a time per lifecycle owner.
+ * This shows the currently active camera with an option to switch.
+ */
 @Composable
-fun KioskCameraPreviews(
+fun KioskCameraPreview(
     cameraState: CameraState,
-    onFrontPreviewCreated: (PreviewView) -> Unit,
-    onRearPreviewCreated: (PreviewView) -> Unit,
+    onPreviewCreated: (PreviewView) -> Unit,
+    onSwitchCamera: (() -> Unit)? = null,
     previewSize: Dp = 100.dp,
     modifier: Modifier = Modifier
 ) {
+    // Determine which camera is active and its label
+    val cameraLabel = when {
+        cameraState.isFrontCameraActive -> "Front"
+        cameraState.isRearCameraActive -> "Rear"
+        else -> "Camera"
+    }
+
+    // Show if we can switch cameras (both available)
+    val canSwitch = cameraState.hasFrontCamera && cameraState.hasRearCamera
+
     Box(modifier = modifier.fillMaxSize()) {
-        // Front camera preview - bottom left
-        if (cameraState.hasFrontCamera) {
+        // Single camera preview - bottom left
+        if (cameraState.isFrontCameraActive || cameraState.isRearCameraActive) {
             CameraPreview(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 12.dp, bottom = 60.dp)
                     .size(previewSize),
-                onPreviewViewCreated = onFrontPreviewCreated,
-                label = "Front"
+                onPreviewViewCreated = onPreviewCreated,
+                label = cameraLabel
             )
-        }
 
-        // Rear camera preview - bottom right
-        if (cameraState.hasRearCamera) {
-            CameraPreview(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 12.dp, bottom = 60.dp)
-                    .size(previewSize),
-                onPreviewViewCreated = onRearPreviewCreated,
-                label = "Rear"
-            )
+            // Switch camera button (if both cameras available)
+            if (canSwitch && onSwitchCamera != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp + previewSize - 28.dp, bottom = 60.dp)
+                        .size(28.dp)
+                        .background(
+                            Color.Black.copy(alpha = 0.7f),
+                            RoundedCornerShape(14.dp)
+                        )
+                        .clickable { onSwitchCamera() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "\u21BB", // Unicode for rotate symbol
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
         }
 
         // Streaming indicator
@@ -137,5 +164,52 @@ fun KioskCameraPreviews(
                 }
             }
         }
+
+        // Error indicator
+        if (cameraState.lastError != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .background(
+                        Color(0xFFFF5722).copy(alpha = 0.9f),
+                        RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text = "Camera Error",
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
+}
+
+// Keep the old function for backwards compatibility but mark as deprecated
+@Deprecated("Use KioskCameraPreview instead - CameraX only supports one camera at a time")
+@Composable
+fun KioskCameraPreviews(
+    cameraState: CameraState,
+    onFrontPreviewCreated: (PreviewView) -> Unit,
+    onRearPreviewCreated: (PreviewView) -> Unit,
+    previewSize: Dp = 100.dp,
+    modifier: Modifier = Modifier
+) {
+    // Redirect to new single camera preview
+    KioskCameraPreview(
+        cameraState = cameraState,
+        onPreviewCreated = { previewView ->
+            if (cameraState.isFrontCameraActive) {
+                onFrontPreviewCreated(previewView)
+            } else {
+                onRearPreviewCreated(previewView)
+            }
+        },
+        onSwitchCamera = null,
+        previewSize = previewSize,
+        modifier = modifier
+    )
 }

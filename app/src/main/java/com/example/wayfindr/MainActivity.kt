@@ -126,10 +126,12 @@ class MainActivity : ComponentActivity() {
                 var showUrlDialog by remember { mutableStateOf(false) }
                 var showWifiDialog by remember { mutableStateOf(false) }
                 var showPasswordDialog by remember { mutableStateOf(false) }
+                var showDeviceAdminDialog by remember { mutableStateOf(false) }
                 var isKioskMode by remember { mutableStateOf(false) }
                 var llmUrl by remember { mutableStateOf("") }
                 var viewModelReady by remember { mutableStateOf(false) }
                 var kioskPasswordHash by remember { mutableStateOf("") }
+                var continuousConversation by remember { mutableStateOf(true) }
 
                 // State for kiosk mode speech confirmation
                 var showSpeechConfirmation by remember { mutableStateOf(false) }
@@ -141,6 +143,9 @@ class MainActivity : ComponentActivity() {
                         cameraStreamManager?.cameraState?.value ?: CameraState()
                     }
                 }
+
+                // Store the camera preview view for switching
+                var cameraPreviewView by remember { mutableStateOf<androidx.camera.view.PreviewView?>(null) }
 
                 // Sync isKioskMode with activity-level state for lock task handling
                 LaunchedEffect(isKioskMode) {
@@ -165,8 +170,13 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     llmUrl = settingsDataStore.getLlmUrl()
                     kioskPasswordHash = settingsDataStore.getKioskPasswordHash()
+                    continuousConversation = settingsDataStore.getContinuousConversation()
                     llmService = LlmService(llmUrl)
                     chatViewModel = ChatViewModel(llmService!!)
+
+                    // Apply continuous conversation setting
+                    chatViewModel.continuousConversationEnabled = continuousConversation
+                    chatViewModel.contextMessageCount = settingsDataStore.getContextMessageCount()
 
                     // Initialize SpeechManager after chatViewModel is ready
                     speechManager = SpeechManager(
@@ -251,11 +261,14 @@ class MainActivity : ComponentActivity() {
                         },
                         isSpeaking = isSpeaking,
                         cameraState = cameraState,
-                        onFrontPreviewCreated = { previewView ->
-                            cameraStreamManager?.bindCameraPreviews(previewView, null)
+                        onPreviewCreated = { previewView ->
+                            cameraPreviewView = previewView
+                            cameraStreamManager?.bindCameraPreview(previewView, preferFront = true)
                         },
-                        onRearPreviewCreated = { previewView ->
-                            cameraStreamManager?.bindCameraPreviews(null, previewView)
+                        onSwitchCamera = {
+                            cameraPreviewView?.let { previewView ->
+                                cameraStreamManager?.switchCamera(previewView)
+                            }
                         }
                     )
                 } else {
@@ -282,6 +295,31 @@ class MainActivity : ComponentActivity() {
                                         if (viewModelReady) {
                                             val markdown = chatViewModel.exportChatHistoryAsMarkdown()
                                             shareMarkdown(this@MainActivity, markdown)
+                                        }
+                                    }
+                                )
+                                NavigationDrawerItem(
+                                    label = {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("Continuous Conversation")
+                                            Switch(
+                                                checked = continuousConversation,
+                                                onCheckedChange = null // Handled by onClick
+                                            )
+                                        }
+                                    },
+                                    selected = false,
+                                    onClick = {
+                                        continuousConversation = !continuousConversation
+                                        if (viewModelReady) {
+                                            chatViewModel.continuousConversationEnabled = continuousConversation
+                                        }
+                                        scope.launch {
+                                            settingsDataStore.setContinuousConversation(continuousConversation)
                                         }
                                     }
                                 )
@@ -317,6 +355,19 @@ class MainActivity : ComponentActivity() {
                                     onClick = {
                                         scope.launch { drawerState.close() }
                                         showWifiDialog = true
+                                    }
+                                )
+                                NavigationDrawerItem(
+                                    label = {
+                                        Text(
+                                            if (isDeviceOwner()) "Kiosk Mode: Fully Locked"
+                                            else "Setup True Kiosk Mode"
+                                        )
+                                    },
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch { drawerState.close() }
+                                        showDeviceAdminDialog = true
                                     }
                                 )
                             }
@@ -457,6 +508,14 @@ class MainActivity : ComponentActivity() {
                                     onDismiss = { showWifiDialog = false }
                                 )
                             }
+
+                            // Device Admin Setup dialog
+                            if (showDeviceAdminDialog) {
+                                DeviceAdminSetupDialog(
+                                    isDeviceOwner = isDeviceOwner(),
+                                    onDismiss = { showDeviceAdminDialog = false }
+                                )
+                            }
                         }
                     }
                 }
@@ -502,22 +561,88 @@ class MainActivity : ComponentActivity() {
     private fun hideSystemUI() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            or View.SYSTEM_UI_FLAG_FULLSCREEN
-        )
+        // Use WindowInsetsController for API 30+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { controller ->
+                controller.hide(
+                    android.view.WindowInsets.Type.statusBars() or
+                    android.view.WindowInsets.Type.navigationBars()
+                )
+                controller.systemBarsBehavior =
+                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+            )
+        }
+
+        // Set up a listener to re-hide system UI when it becomes visible
+        setupSystemUIVisibilityListener()
+    }
+
+    private fun setupSystemUIVisibilityListener() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.decorView.setOnApplyWindowInsetsListener { view, insets ->
+                if (isKioskModeActive) {
+                    // Re-hide after a short delay when system UI appears
+                    view.postDelayed({
+                        if (isKioskModeActive) {
+                            hideSystemUI()
+                        }
+                    }, 3000)
+                }
+                view.onApplyWindowInsets(insets)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
+                if (isKioskModeActive && (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    // System UI is visible, re-hide after delay
+                    window.decorView.postDelayed({
+                        if (isKioskModeActive) {
+                            hideSystemUI()
+                        }
+                    }, 3000)
+                }
+            }
+        }
     }
 
     private fun showSystemUI() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(true)
+            window.insetsController?.show(
+                android.view.WindowInsets.Type.statusBars() or
+                android.view.WindowInsets.Type.navigationBars()
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && isKioskModeActive) {
+            hideSystemUI()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (isKioskModeActive) {
+            hideSystemUI()
+        }
     }
 
     private fun speakText(text: String) {
@@ -863,6 +988,83 @@ fun WifiInfoDialog(context: Context, onDismiss: () -> Unit) {
         },
         confirmButton = {
             Button(onClick = onDismiss) { Text("OK") }
+        }
+    )
+}
+
+// Dialog for Device Admin Setup instructions
+@Composable
+fun DeviceAdminSetupDialog(
+    isDeviceOwner: Boolean,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (isDeviceOwner) "Kiosk Mode Active"
+                else "Setup True Kiosk Mode"
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (isDeviceOwner) {
+                    Text(
+                        "This app is set as Device Owner. Kiosk mode will fully lock the tablet - " +
+                        "users cannot exit without the password.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Home, Back, and Recent Apps buttons are disabled in kiosk mode.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Text(
+                        "To enable true kiosk mode (where users cannot bypass using gestures or buttons), " +
+                        "you need to set this app as Device Owner using ADB.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Steps to enable:",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "1. Enable Developer Options on the tablet\n" +
+                        "2. Enable USB Debugging\n" +
+                        "3. Connect tablet to computer via USB\n" +
+                        "4. Open terminal/command prompt\n" +
+                        "5. Run the following command:",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Text(
+                            text = "adb shell dpm set-device-owner com.example.wayfindr/.KioskDeviceAdminReceiver",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(8.dp),
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        "Note: The device must be in a fresh state (no accounts configured) " +
+                        "or you may need to factory reset first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("OK")
+            }
         }
     )
 }

@@ -56,8 +56,8 @@ fun KioskMode(
     onCancelSend: () -> Unit = {},
     isSpeaking: Boolean = false,
     cameraState: CameraState? = null,
-    onFrontPreviewCreated: ((androidx.camera.view.PreviewView) -> Unit)? = null,
-    onRearPreviewCreated: ((androidx.camera.view.PreviewView) -> Unit)? = null,
+    onPreviewCreated: ((androidx.camera.view.PreviewView) -> Unit)? = null,
+    onSwitchCamera: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var showPasswordDialog by remember { mutableStateOf(false) }
@@ -231,16 +231,14 @@ fun KioskMode(
                 )
             }
 
-            // Camera previews overlay (non-obstructing corners)
+            // Camera preview overlay (single camera with switch capability)
             if (cameraState != null && (cameraState.hasFrontCamera || cameraState.hasRearCamera)) {
-                KioskCameraPreviews(
+                KioskCameraPreview(
                     cameraState = cameraState,
-                    onFrontPreviewCreated = { previewView ->
-                        onFrontPreviewCreated?.invoke(previewView)
+                    onPreviewCreated = { previewView ->
+                        onPreviewCreated?.invoke(previewView)
                     },
-                    onRearPreviewCreated = { previewView ->
-                        onRearPreviewCreated?.invoke(previewView)
-                    },
+                    onSwitchCamera = onSwitchCamera,
                     previewSize = 100.dp,
                     modifier = Modifier.fillMaxSize()
                 )

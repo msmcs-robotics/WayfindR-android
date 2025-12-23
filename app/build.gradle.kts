@@ -53,6 +53,16 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // Enable 16KB page size support for Android 15+ compatibility
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    // Enable 16KB page size alignment for native libraries
+    @Suppress("UnstableApiUsage")
+    androidResources {
+        // This helps with 16KB page size compliance
     }
 }
 

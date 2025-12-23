@@ -16,6 +16,10 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    // Continuous conversation settings
+    var continuousConversationEnabled: Boolean = true
+    var contextMessageCount: Int = 10
+
     fun sendMessage(message: String) {
         if (message.isBlank()) return
 
@@ -27,17 +31,27 @@ class ChatViewModel(
             isUser = true
         )
 
+        val currentMessages = _uiState.value.messages
+
         _uiState.value = _uiState.value.copy(
-            messages = _uiState.value.messages + userMessage,
+            messages = currentMessages + userMessage,
             currentInput = "",
             isLoading = true,
             error = null
         )
 
-        // Send to LLM
+        // Get context for continuous conversation
+        val context = if (continuousConversationEnabled && currentMessages.isNotEmpty()) {
+            // Take the last N messages as context (before adding current message)
+            currentMessages.takeLast(contextMessageCount)
+        } else {
+            emptyList()
+        }
+
+        // Send to LLM with context
         viewModelScope.launch {
             try {
-                val response = llmService.sendMessage(trimmedMessage)
+                val response = llmService.sendMessageWithContext(trimmedMessage, context)
 
                 val assistantMessage = ChatMessage(
                     content = response,

@@ -1,7 +1,9 @@
 package com.example.wayfindr
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.first
@@ -14,6 +16,10 @@ class SettingsDataStore(private val context: Context) {
     companion object {
         val LLM_URL_KEY = stringPreferencesKey("llm_url")
         val KIOSK_PASSWORD_KEY = stringPreferencesKey("kiosk_password")
+        val CONTINUOUS_CONVERSATION_KEY = booleanPreferencesKey("continuous_conversation")
+        val CONTEXT_MESSAGE_COUNT_KEY = intPreferencesKey("context_message_count")
+
+        const val DEFAULT_CONTEXT_MESSAGE_COUNT = 10
 
         fun hashPassword(password: String): String {
             val bytes = password.toByteArray()
@@ -62,5 +68,30 @@ class SettingsDataStore(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs.remove(KIOSK_PASSWORD_KEY)
         }
+    }
+
+    // Continuous conversation settings
+    suspend fun setContinuousConversation(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[CONTINUOUS_CONVERSATION_KEY] = enabled
+        }
+    }
+
+    suspend fun getContinuousConversation(): Boolean {
+        return context.dataStore.data
+            .map { it[CONTINUOUS_CONVERSATION_KEY] ?: true } // Default enabled
+            .first()
+    }
+
+    suspend fun setContextMessageCount(count: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[CONTEXT_MESSAGE_COUNT_KEY] = count.coerceIn(1, 50)
+        }
+    }
+
+    suspend fun getContextMessageCount(): Int {
+        return context.dataStore.data
+            .map { it[CONTEXT_MESSAGE_COUNT_KEY] ?: DEFAULT_CONTEXT_MESSAGE_COUNT }
+            .first()
     }
 }

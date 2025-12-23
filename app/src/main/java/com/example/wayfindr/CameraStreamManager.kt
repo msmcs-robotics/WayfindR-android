@@ -3,7 +3,6 @@ package com.example.wayfindr
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager as AndroidCameraManager
@@ -25,23 +24,25 @@ import java.net.URL
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-data class CameraInfo(
-    val cameraId: String,
-    val isFrontFacing: Boolean,
-    val isAvailable: Boolean
-)
-
 data class CameraState(
     val hasFrontCamera: Boolean = false,
     val hasRearCamera: Boolean = false,
     val isFrontCameraActive: Boolean = false,
     val isRearCameraActive: Boolean = false,
     val isStreaming: Boolean = false,
-    val lastFrontImage: Bitmap? = null,
-    val lastRearImage: Bitmap? = null,
-    val streamIntervalMs: Long = 3000L
+    val streamIntervalMs: Long = 3000L,
+    val imageQuality: Int = 80,
+    val streamingEnabled: Boolean = true,
+    val lastError: String? = null
 )
 
+/**
+ * Manages camera preview and image streaming.
+ *
+ * Note: CameraX can only bind ONE camera at a time per lifecycle owner.
+ * This implementation alternates between front and rear cameras for capture,
+ * but only shows one preview at a time.
+ */
 class CameraStreamManager(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
@@ -56,14 +57,13 @@ class CameraStreamManager(
     private var streamingJob: Job? = null
     private val streamingScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private var frontCameraProvider: ProcessCameraProvider? = null
-    private var rearCameraProvider: ProcessCameraProvider? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var currentImageCapture: ImageCapture? = null
+    private var currentPreview: Preview? = null
+    private var currentCameraSelector: CameraSelector? = null
 
-    private var frontImageCapture: ImageCapture? = null
-    private var rearImageCapture: ImageCapture? = null
-
-    private var frontPreview: Preview? = null
-    private var rearPreview: Preview? = null
+    // Track which camera is currently bound
+    private var currentlyBoundCamera: String? = null // "front" or "rear"
 
     init {
         detectAvailableCameras()
@@ -101,107 +101,133 @@ class CameraStreamManager(
             Log.d(tag, "Camera detection complete - Front: $hasFront, Rear: $hasRear")
         } catch (e: Exception) {
             Log.e(tag, "Error detecting cameras: ${e.message}")
+            _cameraState.value = _cameraState.value.copy(lastError = "Camera detection failed")
         }
     }
 
-    fun bindCameraPreviews(
-        frontPreviewView: PreviewView?,
-        rearPreviewView: PreviewView?
+    /**
+     * Bind a single camera preview. CameraX only supports one camera at a time.
+     * For dual preview, you would need to use Camera2 API directly.
+     */
+    fun bindCameraPreview(
+        previewView: PreviewView?,
+        preferFront: Boolean = true
     ) {
+        if (previewView == null) return
+
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-
             try {
-                // Unbind all existing use cases
-                cameraProvider.unbindAll()
+                cameraProvider = cameraProviderFuture.get()
+                cameraProvider?.unbindAll()
 
                 val state = _cameraState.value
 
-                // Bind front camera if available and preview view provided
-                if (state.hasFrontCamera && frontPreviewView != null) {
-                    bindFrontCamera(cameraProvider, frontPreviewView)
+                // Determine which camera to bind
+                val useFront = preferFront && state.hasFrontCamera
+                val useRear = !preferFront && state.hasRearCamera
+
+                val cameraToUse = when {
+                    useFront -> "front"
+                    useRear -> "rear"
+                    state.hasFrontCamera -> "front"
+                    state.hasRearCamera -> "rear"
+                    else -> null
                 }
 
-                // Bind rear camera if available and preview view provided
-                if (state.hasRearCamera && rearPreviewView != null) {
-                    bindRearCamera(cameraProvider, rearPreviewView)
+                if (cameraToUse != null) {
+                    bindCamera(previewView, cameraToUse)
+                } else {
+                    Log.w(tag, "No cameras available to bind")
+                    _cameraState.value = _cameraState.value.copy(lastError = "No cameras available")
                 }
 
             } catch (e: Exception) {
-                Log.e(tag, "Error binding cameras: ${e.message}")
+                Log.e(tag, "Error binding camera: ${e.message}")
+                _cameraState.value = _cameraState.value.copy(lastError = e.message)
             }
         }, ContextCompat.getMainExecutor(context))
     }
 
-    private fun bindFrontCamera(cameraProvider: ProcessCameraProvider, previewView: PreviewView) {
+    private fun bindCamera(previewView: PreviewView, cameraType: String) {
         try {
-            frontPreview = Preview.Builder()
+            val lensFacing = if (cameraType == "front") {
+                CameraSelector.LENS_FACING_FRONT
+            } else {
+                CameraSelector.LENS_FACING_BACK
+            }
+
+            currentCameraSelector = CameraSelector.Builder()
+                .requireLensFacing(lensFacing)
+                .build()
+
+            currentPreview = Preview.Builder()
                 .setTargetRotation(previewView.display?.rotation ?: 0)
                 .build()
                 .also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
 
-            frontImageCapture = ImageCapture.Builder()
+            currentImageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                 .setTargetRotation(previewView.display?.rotation ?: 0)
                 .build()
 
-            val cameraSelector = CameraSelector.Builder()
-                .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
-                .build()
-
-            cameraProvider.bindToLifecycle(
+            cameraProvider?.bindToLifecycle(
                 lifecycleOwner,
-                cameraSelector,
-                frontPreview,
-                frontImageCapture
+                currentCameraSelector!!,
+                currentPreview,
+                currentImageCapture
             )
 
-            _cameraState.value = _cameraState.value.copy(isFrontCameraActive = true)
-            Log.d(tag, "Front camera bound successfully")
+            currentlyBoundCamera = cameraType
+
+            _cameraState.value = _cameraState.value.copy(
+                isFrontCameraActive = cameraType == "front",
+                isRearCameraActive = cameraType == "rear",
+                lastError = null
+            )
+
+            Log.d(tag, "$cameraType camera bound successfully")
         } catch (e: Exception) {
-            Log.e(tag, "Error binding front camera: ${e.message}")
-            _cameraState.value = _cameraState.value.copy(isFrontCameraActive = false)
+            Log.e(tag, "Error binding $cameraType camera: ${e.message}")
+            _cameraState.value = _cameraState.value.copy(
+                isFrontCameraActive = false,
+                isRearCameraActive = false,
+                lastError = e.message
+            )
         }
     }
 
-    private fun bindRearCamera(cameraProvider: ProcessCameraProvider, previewView: PreviewView) {
-        try {
-            rearPreview = Preview.Builder()
-                .setTargetRotation(previewView.display?.rotation ?: 0)
-                .build()
-                .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
+    /**
+     * Switch to the other camera (front <-> rear)
+     */
+    fun switchCamera(previewView: PreviewView?) {
+        if (previewView == null) return
 
-            rearImageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                .setTargetRotation(previewView.display?.rotation ?: 0)
-                .build()
+        val newCamera = if (currentlyBoundCamera == "front") "rear" else "front"
+        val state = _cameraState.value
 
-            val cameraSelector = CameraSelector.Builder()
-                .requireLensFacing(CameraSelector.LENS_FACING_BACK)
-                .build()
+        // Check if the other camera is available
+        val canSwitch = when (newCamera) {
+            "front" -> state.hasFrontCamera
+            "rear" -> state.hasRearCamera
+            else -> false
+        }
 
-            cameraProvider.bindToLifecycle(
-                lifecycleOwner,
-                cameraSelector,
-                rearPreview,
-                rearImageCapture
-            )
-
-            _cameraState.value = _cameraState.value.copy(isRearCameraActive = true)
-            Log.d(tag, "Rear camera bound successfully")
-        } catch (e: Exception) {
-            Log.e(tag, "Error binding rear camera: ${e.message}")
-            _cameraState.value = _cameraState.value.copy(isRearCameraActive = false)
+        if (canSwitch) {
+            cameraProvider?.unbindAll()
+            bindCamera(previewView, newCamera)
         }
     }
 
     fun startStreaming(intervalMs: Long = 3000L) {
+        if (!_cameraState.value.streamingEnabled) {
+            Log.d(tag, "Streaming is disabled")
+            return
+        }
+
         if (streamingJob?.isActive == true) {
             Log.d(tag, "Streaming already active")
             return
@@ -215,7 +241,7 @@ class CameraStreamManager(
         streamingJob = streamingScope.launch {
             Log.d(tag, "Starting image streaming with interval: ${intervalMs}ms")
             while (isActive) {
-                captureAndStreamImages()
+                captureAndStreamImage()
                 delay(intervalMs)
             }
         }
@@ -231,27 +257,26 @@ class CameraStreamManager(
     fun setStreamInterval(intervalMs: Long) {
         _cameraState.value = _cameraState.value.copy(streamIntervalMs = intervalMs)
         if (_cameraState.value.isStreaming) {
-            // Restart streaming with new interval
             stopStreaming()
             startStreaming(intervalMs)
         }
     }
 
-    private suspend fun captureAndStreamImages() {
-        val state = _cameraState.value
+    fun setImageQuality(quality: Int) {
+        _cameraState.value = _cameraState.value.copy(imageQuality = quality.coerceIn(10, 100))
+    }
 
-        // Capture from front camera if active
-        if (state.isFrontCameraActive && frontImageCapture != null) {
-            captureImage(frontImageCapture!!, "front")
-        }
-
-        // Capture from rear camera if active
-        if (state.isRearCameraActive && rearImageCapture != null) {
-            captureImage(rearImageCapture!!, "rear")
+    fun setStreamingEnabled(enabled: Boolean) {
+        _cameraState.value = _cameraState.value.copy(streamingEnabled = enabled)
+        if (!enabled) {
+            stopStreaming()
         }
     }
 
-    private suspend fun captureImage(imageCapture: ImageCapture, cameraType: String) {
+    private suspend fun captureAndStreamImage() {
+        val imageCapture = currentImageCapture ?: return
+        val cameraType = currentlyBoundCamera ?: return
+
         withContext(Dispatchers.Main) {
             imageCapture.takePicture(
                 cameraExecutor,
@@ -261,15 +286,6 @@ class CameraStreamManager(
                             try {
                                 val bitmap = imageProxyToBitmap(image, cameraType == "front")
                                 image.close()
-
-                                // Update state with latest image
-                                if (cameraType == "front") {
-                                    _cameraState.value = _cameraState.value.copy(lastFrontImage = bitmap)
-                                } else {
-                                    _cameraState.value = _cameraState.value.copy(lastRearImage = bitmap)
-                                }
-
-                                // Stream the image to the server
                                 streamImageToServer(bitmap, cameraType)
                             } catch (e: Exception) {
                                 Log.e(tag, "Error processing captured image: ${e.message}")
@@ -278,7 +294,7 @@ class CameraStreamManager(
                     }
 
                     override fun onError(exception: ImageCaptureException) {
-                        Log.e(tag, "Image capture failed for $cameraType: ${exception.message}")
+                        Log.e(tag, "Image capture failed: ${exception.message}")
                     }
                 }
             )
@@ -292,7 +308,11 @@ class CameraStreamManager(
 
         var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 
-        // Apply rotation based on image rotation
+        if (bitmap == null) {
+            // Fallback: create a small placeholder bitmap
+            bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        }
+
         val rotationDegrees = image.imageInfo.rotationDegrees
         if (rotationDegrees != 0 || mirrorHorizontally) {
             val matrix = Matrix()
@@ -309,13 +329,13 @@ class CameraStreamManager(
     private suspend fun streamImageToServer(bitmap: Bitmap, cameraType: String) {
         withContext(Dispatchers.IO) {
             try {
-                // Convert bitmap to base64
+                val quality = _cameraState.value.imageQuality
+
                 val outputStream = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
                 val imageBytes = outputStream.toByteArray()
                 val base64Image = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
 
-                // Create JSON payload
                 val payload = JSONObject().apply {
                     put("camera", cameraType)
                     put("timestamp", System.currentTimeMillis())
@@ -325,7 +345,6 @@ class CameraStreamManager(
                     put("height", bitmap.height)
                 }
 
-                // Send to server
                 val url = URL("$baseUrl/images")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "POST"
@@ -340,7 +359,7 @@ class CameraStreamManager(
 
                 val responseCode = connection.responseCode
                 if (responseCode == HttpURLConnection.HTTP_OK) {
-                    Log.d(tag, "Image from $cameraType camera streamed successfully")
+                    Log.d(tag, "Image streamed successfully")
                 } else {
                     Log.w(tag, "Image stream returned code: $responseCode")
                 }
@@ -356,7 +375,6 @@ class CameraStreamManager(
         stopStreaming()
         streamingScope.cancel()
         cameraExecutor.shutdown()
-        frontCameraProvider?.unbindAll()
-        rearCameraProvider?.unbindAll()
+        cameraProvider?.unbindAll()
     }
 }
