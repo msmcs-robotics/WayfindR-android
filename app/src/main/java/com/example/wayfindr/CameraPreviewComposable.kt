@@ -14,12 +14,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.Image
 
 @Composable
 fun CameraPreview(
@@ -103,54 +106,45 @@ fun KioskCameraPreview(
     val showPreview = cameraState.hasFrontCamera || cameraState.hasRearCamera
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Front camera preview - TOP LEFT
-        if (cameraState.hasFrontCamera) {
-            if (cameraState.isFrontCameraActive) {
-                // Live preview for front camera
-                CameraPreview(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 12.dp, top = 12.dp)
-                        .size(previewSize),
-                    onPreviewViewCreated = onPreviewCreated,
-                    label = "Front"
-                )
-            } else {
-                // Placeholder for front camera (tap to switch)
-                CameraPlaceholder(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 12.dp, top = 12.dp)
-                        .size(previewSize),
-                    label = "Front",
-                    isClickable = canSwitch && onSwitchCamera != null,
-                    onClick = { onSwitchCamera?.invoke() }
-                )
-            }
-        }
+        // Always show BOTH camera positions if we detected the cameras
+        // This ensures the UI is visible even before first binding
 
-        // Rear camera preview - TOP RIGHT
-        if (cameraState.hasRearCamera) {
-            if (cameraState.isRearCameraActive) {
-                // Live preview for rear camera
+        // Front camera - TOP LEFT
+        CameraPlaceholder(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 12.dp, top = 12.dp)
+                .size(previewSize),
+            label = "Front",
+            capturedImage = cameraState.lastFrontImage,
+            isClickable = false,
+            onClick = {}
+        )
+
+        // Rear camera - TOP RIGHT
+        CameraPlaceholder(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = 12.dp, top = 12.dp)
+                .size(previewSize),
+            label = "Rear",
+            capturedImage = cameraState.lastRearImage,
+            isClickable = false,
+            onClick = {}
+        )
+
+        // Hidden live preview for camera binding (required for capture to work)
+        // Position it off-screen or make it tiny
+        if (cameraState.isFrontCameraActive || cameraState.isRearCameraActive) {
+            Box(
+                modifier = Modifier
+                    .size(1.dp)
+                    .align(Alignment.BottomStart)
+            ) {
                 CameraPreview(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(end = 12.dp, top = 12.dp)
-                        .size(previewSize),
+                    modifier = Modifier.size(1.dp),
                     onPreviewViewCreated = onPreviewCreated,
-                    label = "Rear"
-                )
-            } else {
-                // Placeholder for rear camera (tap to switch)
-                CameraPlaceholder(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(end = 12.dp, top = 12.dp)
-                        .size(previewSize),
-                    label = "Rear",
-                    isClickable = canSwitch && onSwitchCamera != null,
-                    onClick = { onSwitchCamera?.invoke() }
+                    label = ""
                 )
             }
         }
@@ -210,12 +204,13 @@ fun KioskCameraPreview(
 }
 
 /**
- * Placeholder for inactive camera - shows label and tap-to-switch hint
+ * Placeholder for inactive camera - shows last captured image or label
  */
 @Composable
 fun CameraPlaceholder(
     modifier: Modifier = Modifier,
     label: String,
+    capturedImage: android.graphics.Bitmap? = null,
     isClickable: Boolean = false,
     onClick: () -> Unit = {}
 ) {
@@ -227,23 +222,73 @@ fun CameraPlaceholder(
             .then(if (isClickable) Modifier.clickable { onClick() } else Modifier),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = label,
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
+        // Show captured image if available, otherwise show text label
+        if (capturedImage != null) {
+            Image(
+                bitmap = capturedImage.asImageBitmap(),
+                contentDescription = "$label camera last capture",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
-            if (isClickable) {
-                Spacer(modifier = Modifier.height(4.dp))
+
+            // Label overlay on the image
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(4.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.6f),
+                        RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
                 Text(
-                    text = "Tap to switch",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 8.sp
+                    text = label,
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
                 )
+            }
+
+            // Optional tap-to-switch hint
+            if (isClickable) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .background(
+                            Color.Black.copy(alpha = 0.6f),
+                            RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "Tap to switch",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 8.sp
+                    )
+                }
+            }
+        } else {
+            // No image captured yet - show text placeholder
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = label,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                if (isClickable) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Tap to switch",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 8.sp
+                    )
+                }
             }
         }
     }

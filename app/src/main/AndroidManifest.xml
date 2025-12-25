@@ -19,6 +19,11 @@
     <!-- Camera permissions for image streaming -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Storage permissions for saving captured images -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
     <!-- Declare that the app uses microphone feature (optional, but good practice) -->
     <uses-feature
         android:name="android.hardware.microphone"

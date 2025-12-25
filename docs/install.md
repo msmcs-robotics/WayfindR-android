@@ -50,7 +50,7 @@ This is the easiest method for most users.
 5. Open a new file manager window or tab
 6. Navigate to the WayfindR APK location on your computer:
    ```
-   /home/devel/Desktop/WayfindR-android/app/build/outputs/apk/debug/
+   $HOME/Desktop/WayfindR-android/app/build/outputs/apk/debug/
    ```
 7. **Drag and drop** the `WayfindR-debug-v1.0.apk` file into the Download folder on your tablet
 8. Wait for the file transfer to complete (64MB file, should take 5-10 seconds)
@@ -124,7 +124,7 @@ If you see "unauthorized", check your tablet for the USB debugging permission di
 #### Step 5: Install the APK
 
 ```bash
-cd /home/devel/Desktop/WayfindR-android
+cd $HOME/Desktop/WayfindR-android
 adb install app/build/outputs/apk/debug/WayfindR-debug-v1.0.apk
 ```
 

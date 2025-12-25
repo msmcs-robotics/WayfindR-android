@@ -88,8 +88,20 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            initializeCameraStreaming()
+            // After camera permission, check storage permission
+            if (!hasStoragePermission()) {
+                requestStoragePermission()
+            } else {
+                initializeCameraStreaming()
+            }
         }
+    }
+
+    private val requestStoragePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        // Initialize camera even if storage denied (just won't save images)
+        initializeCameraStreaming()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -161,6 +173,9 @@ class MainActivity : ComponentActivity() {
                         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
                         // Start camera streaming when entering kiosk mode
                         if (hasCameraPermission()) {
+                            if (!hasStoragePermission()) {
+                                requestStoragePermission()
+                            }
                             initializeCameraStreaming()
                             cameraStreamManager?.startStreaming(3000L)
                         } else {
@@ -680,6 +695,29 @@ class MainActivity : ComponentActivity() {
     private fun hasCameraPermission() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.CAMERA
     ) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasStoragePermission(): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ uses READ_MEDIA_IMAGES
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.READ_MEDIA_IMAGES
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            // Android 12 and below use WRITE_EXTERNAL_STORAGE
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestStoragePermission() {
+        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+        }
+        requestStoragePermissionLauncher.launch(permission)
+    }
 
     private fun initializeCameraStreaming() {
         if (cameraStreamManager == null) {
