@@ -50,6 +50,8 @@ import android.net.NetworkCapabilities
 import java.net.NetworkInterface
 import java.net.Inet4Address
 import androidx.compose.foundation.border
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.speech.tts.TextToSpeech
 import android.view.View
 import android.view.WindowManager
@@ -138,9 +140,12 @@ class MainActivity : ComponentActivity() {
                 var pendingSpeechMessage by remember { mutableStateOf("") }
 
                 // Camera state for kiosk mode
-                val cameraState by remember {
-                    derivedStateOf {
-                        cameraStreamManager?.cameraState?.value ?: CameraState()
+                var cameraState by remember { mutableStateOf(CameraState()) }
+
+                // Observe camera state changes when cameraStreamManager is available
+                LaunchedEffect(cameraStreamManager) {
+                    cameraStreamManager?.cameraState?.collect { state ->
+                        cameraState = state
                     }
                 }
 
@@ -152,6 +157,8 @@ class MainActivity : ComponentActivity() {
                     isKioskModeActive = isKioskMode
                     if (isKioskMode) {
                         enableKioskLockTask()
+                        // Lock screen orientation to prevent rotation from exiting kiosk mode
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
                         // Start camera streaming when entering kiosk mode
                         if (hasCameraPermission()) {
                             initializeCameraStreaming()
@@ -161,6 +168,8 @@ class MainActivity : ComponentActivity() {
                         }
                     } else {
                         stopLockTaskIfNeeded()
+                        // Unlock screen orientation when exiting kiosk mode
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                         // Stop camera streaming when exiting kiosk mode
                         cameraStreamManager?.stopStreaming()
                     }

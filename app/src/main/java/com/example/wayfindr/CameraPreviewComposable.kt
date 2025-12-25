@@ -28,6 +28,8 @@ fun CameraPreview(
     label: String = ""
 ) {
     val context = LocalContext.current
+    // Track if we've already called the callback to avoid re-binding on every recomposition
+    var hasCalledCallback by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -48,7 +50,11 @@ fun CameraPreview(
             },
             modifier = Modifier.fillMaxSize(),
             update = { previewView ->
-                onPreviewViewCreated(previewView)
+                // Only call the callback once when the view is first created/attached
+                if (!hasCalledCallback) {
+                    hasCalledCallback = true
+                    onPreviewViewCreated(previewView)
+                }
             }
         )
 
@@ -76,9 +82,11 @@ fun CameraPreview(
 }
 
 /**
- * Single camera preview for kiosk mode.
- * CameraX only supports one camera at a time per lifecycle owner.
- * This shows the currently active camera with an option to switch.
+ * Dual camera preview layout for kiosk mode.
+ * Shows front camera (top-left) and rear camera (top-right) above the chat area.
+ *
+ * Note: CameraX only supports one LIVE camera at a time per lifecycle owner.
+ * The active camera shows live preview, the other shows a placeholder with switch button.
  */
 @Composable
 fun KioskCameraPreview(
@@ -88,58 +96,71 @@ fun KioskCameraPreview(
     previewSize: Dp = 100.dp,
     modifier: Modifier = Modifier
 ) {
-    // Determine which camera is active and its label
-    val cameraLabel = when {
-        cameraState.isFrontCameraActive -> "Front"
-        cameraState.isRearCameraActive -> "Rear"
-        else -> "Camera"
-    }
-
     // Show if we can switch cameras (both available)
     val canSwitch = cameraState.hasFrontCamera && cameraState.hasRearCamera
 
-    Box(modifier = modifier.fillMaxSize()) {
-        // Single camera preview - bottom left
-        if (cameraState.isFrontCameraActive || cameraState.isRearCameraActive) {
-            CameraPreview(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 12.dp, bottom = 60.dp)
-                    .size(previewSize),
-                onPreviewViewCreated = onPreviewCreated,
-                label = cameraLabel
-            )
+    // Show preview if ANY camera is available
+    val showPreview = cameraState.hasFrontCamera || cameraState.hasRearCamera
 
-            // Switch camera button (if both cameras available)
-            if (canSwitch && onSwitchCamera != null) {
-                Box(
+    Box(modifier = modifier.fillMaxSize()) {
+        // Front camera preview - TOP LEFT
+        if (cameraState.hasFrontCamera) {
+            if (cameraState.isFrontCameraActive) {
+                // Live preview for front camera
+                CameraPreview(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 12.dp + previewSize - 28.dp, bottom = 60.dp)
-                        .size(28.dp)
-                        .background(
-                            Color.Black.copy(alpha = 0.7f),
-                            RoundedCornerShape(14.dp)
-                        )
-                        .clickable { onSwitchCamera() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "\u21BB", // Unicode for rotate symbol
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                        .align(Alignment.TopStart)
+                        .padding(start = 12.dp, top = 12.dp)
+                        .size(previewSize),
+                    onPreviewViewCreated = onPreviewCreated,
+                    label = "Front"
+                )
+            } else {
+                // Placeholder for front camera (tap to switch)
+                CameraPlaceholder(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 12.dp, top = 12.dp)
+                        .size(previewSize),
+                    label = "Front",
+                    isClickable = canSwitch && onSwitchCamera != null,
+                    onClick = { onSwitchCamera?.invoke() }
+                )
             }
         }
 
-        // Streaming indicator
+        // Rear camera preview - TOP RIGHT
+        if (cameraState.hasRearCamera) {
+            if (cameraState.isRearCameraActive) {
+                // Live preview for rear camera
+                CameraPreview(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 12.dp, top = 12.dp)
+                        .size(previewSize),
+                    onPreviewViewCreated = onPreviewCreated,
+                    label = "Rear"
+                )
+            } else {
+                // Placeholder for rear camera (tap to switch)
+                CameraPlaceholder(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 12.dp, top = 12.dp)
+                        .size(previewSize),
+                    label = "Rear",
+                    isClickable = canSwitch && onSwitchCamera != null,
+                    onClick = { onSwitchCamera?.invoke() }
+                )
+            }
+        }
+
+        // Streaming indicator - below the camera previews
         if (cameraState.isStreaming) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
+                    .align(Alignment.TopCenter)
+                    .padding(top = previewSize + 16.dp)
                     .background(
                         Color.Red.copy(alpha = 0.8f),
                         RoundedCornerShape(4.dp)
@@ -169,8 +190,8 @@ fun KioskCameraPreview(
         if (cameraState.lastError != null) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(8.dp)
+                    .align(Alignment.TopCenter)
+                    .padding(top = if (cameraState.isStreaming) previewSize + 40.dp else previewSize + 16.dp)
                     .background(
                         Color(0xFFFF5722).copy(alpha = 0.9f),
                         RoundedCornerShape(4.dp)
@@ -182,6 +203,46 @@ fun KioskCameraPreview(
                     color = Color.White,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Placeholder for inactive camera - shows label and tap-to-switch hint
+ */
+@Composable
+fun CameraPlaceholder(
+    modifier: Modifier = Modifier,
+    label: String,
+    isClickable: Boolean = false,
+    onClick: () -> Unit = {}
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .border(2.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+            .background(Color.DarkGray.copy(alpha = 0.8f))
+            .then(if (isClickable) Modifier.clickable { onClick() } else Modifier),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = label,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (isClickable) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Tap to switch",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 8.sp
                 )
             }
         }

@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager as AndroidCameraManager
+import android.os.Environment
 import android.util.Base64
 import android.util.Log
 import androidx.camera.core.*
@@ -19,8 +20,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -33,7 +39,12 @@ data class CameraState(
     val streamIntervalMs: Long = 3000L,
     val imageQuality: Int = 80,
     val streamingEnabled: Boolean = true,
-    val lastError: String? = null
+    val lastError: String? = null,
+    // Captured images for display in placeholders
+    val lastFrontImage: android.graphics.Bitmap? = null,
+    val lastRearImage: android.graphics.Bitmap? = null,
+    val lastFrontCaptureTime: Long = 0L,
+    val lastRearCaptureTime: Long = 0L
 )
 
 /**
@@ -64,6 +75,24 @@ class CameraStreamManager(
 
     // Track which camera is currently bound
     private var currentlyBoundCamera: String? = null // "front" or "rear"
+
+    // Track which camera to capture from next (for alternating)
+    private var nextCaptureCamera: String = "front"
+
+    // Preview view reference for camera switching
+    private var currentPreviewView: PreviewView? = null
+
+    // WayfindR image storage directory
+    private val imageDir: File by lazy {
+        val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+        val wayfindRDir = File(picturesDir, "WayfindR")
+        if (!wayfindRDir.exists()) {
+            wayfindRDir.mkdirs()
+            // Create .nomedia file to hide from Google Photos
+            File(wayfindRDir, ".nomedia").createNewFile()
+        }
+        wayfindRDir
+    }
 
     init {
         detectAvailableCameras()
@@ -114,6 +143,9 @@ class CameraStreamManager(
         preferFront: Boolean = true
     ) {
         if (previewView == null) return
+
+        // Store preview view reference for camera switching
+        currentPreviewView = previewView
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -239,12 +271,49 @@ class CameraStreamManager(
         )
 
         streamingJob = streamingScope.launch {
-            Log.d(tag, "Starting image streaming with interval: ${intervalMs}ms")
+            Log.d(tag, "Starting alternating camera capture with interval: ${intervalMs}ms")
             while (isActive) {
-                captureAndStreamImage()
+                captureAndStreamAlternating()
                 delay(intervalMs)
             }
         }
+    }
+
+    /**
+     * Capture from alternating cameras (front, rear, front, rear, ...)
+     * Switches camera, captures, stores bitmap, saves to file, and streams to server.
+     */
+    private suspend fun captureAndStreamAlternating() {
+        val state = _cameraState.value
+
+        // Determine which camera to use
+        val cameraToCapture = when {
+            state.hasFrontCamera && state.hasRearCamera -> {
+                // Alternate between cameras
+                val camera = nextCaptureCamera
+                nextCaptureCamera = if (camera == "front") "rear" else "front"
+                camera
+            }
+            state.hasFrontCamera -> "front"
+            state.hasRearCamera -> "rear"
+            else -> return // No cameras available
+        }
+
+        // If we need to switch cameras
+        if (currentlyBoundCamera != cameraToCapture) {
+            Log.d(tag, "Switching to $cameraToCapture camera for capture")
+            withContext(Dispatchers.Main) {
+                currentPreviewView?.let { previewView ->
+                    cameraProvider?.unbindAll()
+                    bindCamera(previewView, cameraToCapture)
+                }
+            }
+            // Give time for camera to initialize
+            delay(500)
+        }
+
+        // Now capture
+        captureAndStreamImage()
     }
 
     fun stopStreaming() {
@@ -286,6 +355,25 @@ class CameraStreamManager(
                             try {
                                 val bitmap = imageProxyToBitmap(image, cameraType == "front")
                                 image.close()
+
+                                // Store the captured bitmap in state for UI display
+                                val captureTime = System.currentTimeMillis()
+                                if (cameraType == "front") {
+                                    _cameraState.value = _cameraState.value.copy(
+                                        lastFrontImage = bitmap,
+                                        lastFrontCaptureTime = captureTime
+                                    )
+                                } else {
+                                    _cameraState.value = _cameraState.value.copy(
+                                        lastRearImage = bitmap,
+                                        lastRearCaptureTime = captureTime
+                                    )
+                                }
+
+                                // Save to WayfindR folder
+                                saveImageToFile(bitmap, cameraType)
+
+                                // Stream to server
                                 streamImageToServer(bitmap, cameraType)
                             } catch (e: Exception) {
                                 Log.e(tag, "Error processing captured image: ${e.message}")
@@ -298,6 +386,23 @@ class CameraStreamManager(
                     }
                 }
             )
+        }
+    }
+
+    private fun saveImageToFile(bitmap: Bitmap, cameraType: String) {
+        try {
+            val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+            val timestamp = dateFormat.format(Date())
+            val filename = "wayfindr_${cameraType}_$timestamp.jpg"
+            val file = File(imageDir, filename)
+
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, _cameraState.value.imageQuality, out)
+            }
+
+            Log.d(tag, "Image saved: ${file.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(tag, "Error saving image: ${e.message}")
         }
     }
 
